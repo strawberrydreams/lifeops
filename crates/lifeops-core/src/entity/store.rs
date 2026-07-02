@@ -180,6 +180,24 @@ impl EntityStore {
         tx.commit().await?;
         Ok(())
     }
+
+    pub async fn list(&self, types: &[String]) -> Result<Vec<Entity>, CoreError> {
+        if types.is_empty() {
+            return Ok(Vec::new());
+        }
+        // 필드명·타입명은 쿼리에 직접 넣지 않는다 — placeholder만 조립, 값은 바인딩
+        let placeholders = vec!["?"; types.len()].join(", ");
+        let sql = format!(
+            "SELECT id, type, data, created_at, updated_at FROM entities \
+             WHERE type IN ({placeholders}) ORDER BY updated_at DESC"
+        );
+        let mut query = sqlx::query(&sql);
+        for t in types {
+            query = query.bind(t);
+        }
+        let rows = query.fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(row_to_entity).collect())
+    }
 }
 
 pub(crate) fn row_to_entity(row: sqlx::sqlite::SqliteRow) -> Entity {
@@ -424,5 +442,22 @@ mod tests {
         let store = EntityStore::open_in_memory().await.unwrap();
         let err = store.delete("ghost").await.unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn 타입_목록으로_조회한다() {
+        let store = EntityStore::open_in_memory().await.unwrap();
+        let schemas = test_schemas();
+        store.create(&schemas, "물건", obj(json!({ "이름": "잡화1" }))).await.unwrap();
+        store.create(&schemas, "시계", obj(json!({ "이름": "시계1" }))).await.unwrap();
+        store.create(&schemas, "할일", obj(json!({ "내용": "정리" }))).await.unwrap();
+
+        let family = schemas.family_of("물건"); // [물건, 시계]
+        let items = store.list(&family).await.unwrap();
+        assert_eq!(items.len(), 2);
+        let all = store.list(&["물건".into(), "시계".into(), "할일".into()]).await.unwrap();
+        assert_eq!(all.len(), 3);
+        let none = store.list(&[]).await.unwrap();
+        assert!(none.is_empty());
     }
 }
