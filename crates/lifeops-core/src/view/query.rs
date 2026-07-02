@@ -1,0 +1,658 @@
+use crate::entity::{Entity, EntityStore};
+use crate::error::ViewError;
+use crate::schema::{FieldKind, ResolvedSchema, SchemaSet};
+use crate::view::model::{Filter, ViewBlock, ViewResult};
+use indexmap::IndexMap;
+use serde_json::Value;
+use std::cmp::Ordering;
+
+pub async fn run_view(
+    store: &EntityStore,
+    schemas: &SchemaSet,
+    block: &ViewBlock,
+) -> Result<ViewResult, ViewError> {
+    let schema = schemas
+        .get(&block.source)
+        .ok_or_else(|| ViewError::UnknownSource(block.source.clone()))?;
+
+    validate_filter(block, schema)?;
+    validate_sort(block, schema)?;
+
+    let mut entities = store.list(&schemas.family_of(&block.source)).await?;
+    if let Some(filter) = &block.filter {
+        entities.retain(|entity| matches(entity, schema, filter));
+    }
+
+    let mut aggregates = IndexMap::new();
+    if let Some(aggregate) = &block.aggregate {
+        for (name, expr) in aggregate {
+            aggregates.insert(
+                name.clone(),
+                compute_aggregate(&block.view, expr, schema, &entities)?,
+            );
+        }
+    }
+
+    if let Some(sort) = &block.sort {
+        sort_entities(&mut entities, schema, sort);
+    }
+
+    Ok(ViewResult {
+        view: block.view.clone(),
+        layout: block.layout,
+        columns: block.columns.clone(),
+        entities,
+        aggregates,
+    })
+}
+
+fn validate_filter(block: &ViewBlock, schema: &ResolvedSchema) -> Result<(), ViewError> {
+    if let Some(filter) = &block.filter {
+        for field in filter.keys() {
+            if !schema.fields.contains_key(field) {
+                return Err(unknown_field(block, field));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_sort(block: &ViewBlock, schema: &ResolvedSchema) -> Result<(), ViewError> {
+    if let Some(sort) = &block.sort {
+        let field = sort.strip_prefix('-').unwrap_or(sort);
+        if !schema.fields.contains_key(field) {
+            return Err(unknown_field(block, field));
+        }
+    }
+    Ok(())
+}
+
+fn unknown_field(block: &ViewBlock, field: &str) -> ViewError {
+    ViewError::UnknownField {
+        view: block.view.clone(),
+        source: block.source.clone(),
+        field: field.to_string(),
+    }
+}
+
+fn matches(entity: &Entity, schema: &ResolvedSchema, filter: &Filter) -> bool {
+    filter.iter().all(|(field, condition)| {
+        match_one(
+            entity.data.get(field),
+            &schema.fields[field].kind,
+            condition,
+        )
+    })
+}
+
+fn match_one(actual: Option<&Value>, kind: &FieldKind, condition: &Value) -> bool {
+    let Some(op_map) = condition.as_object() else {
+        return scalar_eq(actual, condition);
+    };
+    if op_map.len() != 1 {
+        return false;
+    }
+
+    let (op, arg) = op_map.iter().next().expect("operator map length checked");
+    match op.as_str() {
+        "month" => date_month_matches(actual, arg),
+        "lt" => compare_filter(actual, kind, arg).is_some_and(|ord| ord == Ordering::Less),
+        "gt" => compare_filter(actual, kind, arg).is_some_and(|ord| ord == Ordering::Greater),
+        _ => false,
+    }
+}
+
+fn scalar_eq(actual: Option<&Value>, condition: &Value) -> bool {
+    let Some(actual) = actual else {
+        return false;
+    };
+    match (actual.as_f64(), condition.as_f64()) {
+        (Some(left), Some(right)) => left == right,
+        _ => actual == condition,
+    }
+}
+
+fn date_month_matches(actual: Option<&Value>, arg: &Value) -> bool {
+    match (actual, arg.as_str()) {
+        (Some(Value::String(d)), Some(m)) => d.starts_with(m),
+        _ => false,
+    }
+}
+
+fn compare_filter(actual: Option<&Value>, kind: &FieldKind, arg: &Value) -> Option<Ordering> {
+    match kind {
+        FieldKind::Date => {
+            let left = actual?.as_str()?;
+            let right = arg.as_str()?;
+            Some(left.cmp(right))
+        }
+        _ => {
+            let left = extract_f64(actual?)?;
+            let right = extract_f64(arg)?;
+            left.partial_cmp(&right)
+        }
+    }
+}
+
+fn extract_f64(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_object()?.get("amount")?.as_f64())
+}
+
+fn compute_aggregate(
+    view: &str,
+    expr: &str,
+    schema: &ResolvedSchema,
+    entities: &[Entity],
+) -> Result<Value, ViewError> {
+    let (func, field) = parse_agg(expr).ok_or_else(|| ViewError::BadAggregate {
+        view: view.to_string(),
+        expr: expr.to_string(),
+    })?;
+    if !matches!(func, "count" | "sum" | "min" | "max") {
+        return Err(ViewError::BadAggregate {
+            view: view.to_string(),
+            expr: expr.to_string(),
+        });
+    }
+    if !schema.fields.contains_key(field) {
+        return Err(ViewError::UnknownField {
+            view: view.to_string(),
+            source: schema.name.clone(),
+            field: field.to_string(),
+        });
+    }
+    if matches!(func, "sum" | "min" | "max") {
+        validate_money_currency(view, field, schema, entities)?;
+    }
+
+    match func {
+        "count" => Ok(Value::from(entities.len())),
+        "sum" => Ok(Value::from(
+            entities
+                .iter()
+                .filter_map(|entity| entity.data.get(field).and_then(extract_f64))
+                .sum::<f64>(),
+        )),
+        "min" => Ok(numeric_extreme(field, entities, f64::min)),
+        "max" => Ok(numeric_extreme(field, entities, f64::max)),
+        _ => unreachable!("aggregate function validated before field lookup"),
+    }
+}
+
+fn parse_agg(expr: &str) -> Option<(&str, &str)> {
+    let expr = expr.trim();
+    let open = expr.find('(')?;
+    let inner = expr.strip_suffix(')')?;
+    let func = inner[..open].trim();
+    let field = inner[open + 1..].trim();
+    if func.is_empty() || field.is_empty() || field.contains('(') || field.contains(')') {
+        return None;
+    }
+    Some((func, field))
+}
+
+fn validate_money_currency(
+    view: &str,
+    field: &str,
+    schema: &ResolvedSchema,
+    entities: &[Entity],
+) -> Result<(), ViewError> {
+    if !matches!(&schema.fields[field].kind, FieldKind::Money) {
+        return Ok(());
+    }
+
+    let mut currency = None;
+    for entity in entities {
+        let Some(value) = entity.data.get(field) else {
+            continue;
+        };
+        if extract_f64(value).is_none() {
+            continue;
+        }
+        let Some(next) = value
+            .as_object()
+            .and_then(|object| object.get("currency"))
+            .and_then(Value::as_str)
+            .filter(|currency| !currency.is_empty())
+        else {
+            continue;
+        };
+        if let Some(current) = currency {
+            if current != next {
+                return Err(ViewError::CurrencyMismatch {
+                    view: view.to_string(),
+                    field: field.to_string(),
+                });
+            }
+        } else {
+            currency = Some(next);
+        }
+    }
+    Ok(())
+}
+
+fn numeric_extreme(field: &str, entities: &[Entity], combine: impl Fn(f64, f64) -> f64) -> Value {
+    entities
+        .iter()
+        .filter_map(|entity| entity.data.get(field).and_then(extract_f64))
+        .fold(None, |acc: Option<f64>, value| {
+            Some(acc.map_or(value, |current| combine(current, value)))
+        })
+        .map(Value::from)
+        .unwrap_or(Value::Null)
+}
+
+/// 엔티티 슬라이스를 `sort` 스펙(`-` 접두사는 내림차순)에 따라 정렬한다.
+/// 뷰 엔진 내부와 서버의 자동 기본 뷰(GET /api/entities)가 동일한 정렬 규칙을 공유하기 위해 공개됨.
+pub fn sort_entities(entities: &mut [Entity], schema: &ResolvedSchema, sort: &str) {
+    let (descending, field) = match sort.strip_prefix('-') {
+        Some(field) => (true, field),
+        None => (false, sort),
+    };
+    let kind = &schema.fields[field].kind;
+
+    entities.sort_by(|left, right| {
+        compare_sort(
+            left.data.get(field),
+            right.data.get(field),
+            kind,
+            descending,
+        )
+    });
+}
+
+fn compare_sort(
+    left: Option<&Value>,
+    right: Option<&Value>,
+    kind: &FieldKind,
+    descending: bool,
+) -> Ordering {
+    let left_key = sort_key(left, kind);
+    let right_key = sort_key(right, kind);
+    let has_missing = matches!(
+        (&left_key, &right_key),
+        (SortKey::Missing, _) | (_, SortKey::Missing)
+    );
+    let ord = match (left_key, right_key) {
+        (SortKey::Missing, SortKey::Missing) => Ordering::Equal,
+        (SortKey::Missing, _) => Ordering::Greater,
+        (_, SortKey::Missing) => Ordering::Less,
+        (SortKey::Number(left), SortKey::Number(right)) => {
+            left.partial_cmp(&right).unwrap_or(Ordering::Equal)
+        }
+        (SortKey::Text(left), SortKey::Text(right)) => left.cmp(&right),
+        (left, right) => left.rank().cmp(&right.rank()),
+    };
+    if descending && !has_missing && ord != Ordering::Equal {
+        ord.reverse()
+    } else {
+        ord
+    }
+}
+
+fn sort_key(value: Option<&Value>, kind: &FieldKind) -> SortKey {
+    let Some(value) = value else {
+        return SortKey::Missing;
+    };
+    match kind {
+        FieldKind::Number | FieldKind::Money => {
+            extract_f64(value).map_or(SortKey::Missing, SortKey::Number)
+        }
+        FieldKind::Text | FieldKind::Enum | FieldKind::Date => value
+            .as_str()
+            .map(|s| SortKey::Text(s.to_string()))
+            .unwrap_or(SortKey::Missing),
+        _ => SortKey::Text(value.to_string()),
+    }
+}
+
+enum SortKey {
+    Missing,
+    Number(f64),
+    Text(String),
+}
+
+impl SortKey {
+    fn rank(&self) -> u8 {
+        match self {
+            SortKey::Missing => 2,
+            SortKey::Number(_) => 0,
+            SortKey::Text(_) => 1,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entity::EntityStore;
+    use crate::schema::SchemaSet;
+    use serde_json::{json, Map, Value};
+
+    fn schemas() -> SchemaSet {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("물건.yaml"),
+            "type: 물건\nfields:\n  이름: { kind: text, required: true }\n  상태: { kind: enum, options: [위시, 주문됨, 보유, 과거] }\n  가격: { kind: money }\n  배송예정일: { kind: date }\n",
+        ).unwrap();
+        std::fs::write(
+            dir.path().join("시계.yaml"),
+            "type: 시계\nextends: 물건\nfields:\n  무브먼트: { kind: text }\n",
+        )
+        .unwrap();
+        SchemaSet::load_dir(dir.path()).unwrap()
+    }
+    fn obj(v: Value) -> Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    async fn seed(store: &EntityStore, s: &SchemaSet) {
+        store.create(s, "물건", obj(json!({ "이름": "A", "상태": "주문됨", "가격": {"amount": 300000.0, "currency": "KRW"}, "배송예정일": "2026-07-10" }))).await.unwrap();
+        store.create(s, "물건", obj(json!({ "이름": "B", "상태": "위시", "가격": {"amount": 100000.0, "currency": "KRW"}, "배송예정일": "2026-08-01" }))).await.unwrap();
+        store.create(s, "시계", obj(json!({ "이름": "C", "상태": "주문됨", "가격": {"amount": 650000.0, "currency": "KRW"}, "배송예정일": "2026-07-20" }))).await.unwrap();
+    }
+
+    fn block(yaml: &str) -> crate::view::ViewBlock {
+        serde_yaml::from_str(yaml).unwrap()
+    }
+
+    #[tokio::test]
+    async fn eq_필터와_family_확장() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        seed(&store, &s).await;
+        let r = run_view(
+            &store,
+            &s,
+            &block("view: v\nsource: 물건\nfilter: { 상태: 주문됨 }\n"),
+        )
+        .await
+        .unwrap();
+        let names: Vec<&str> = r
+            .entities
+            .iter()
+            .map(|e| e.data["이름"].as_str().unwrap())
+            .collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"A") && names.contains(&"C"));
+    }
+
+    #[tokio::test]
+    async fn month_필터() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        seed(&store, &s).await;
+        let r = run_view(
+            &store,
+            &s,
+            &block("view: v\nsource: 물건\nfilter: { 배송예정일: { month: 2026-07 } }\n"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.entities.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn gt_필터_money와_정렬() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        seed(&store, &s).await;
+        let r = run_view(
+            &store,
+            &s,
+            &block("view: v\nsource: 물건\nfilter: { 가격: { gt: 200000 } }\nsort: 가격\n"),
+        )
+        .await
+        .unwrap();
+        let names: Vec<&str> = r
+            .entities
+            .iter()
+            .map(|e| e.data["이름"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["A", "C"]);
+        let r2 = run_view(
+            &store,
+            &s,
+            &block("view: v\nsource: 물건\nfilter: { 가격: { gt: 200000 } }\nsort: -가격\n"),
+        )
+        .await
+        .unwrap();
+        let names2: Vec<&str> = r2
+            .entities
+            .iter()
+            .map(|e| e.data["이름"].as_str().unwrap())
+            .collect();
+        assert_eq!(names2, ["C", "A"]);
+    }
+
+    #[tokio::test]
+    async fn null_정렬값은_오름차순과_내림차순_모두_마지막() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        store
+            .create(
+                &s,
+                "물건",
+                obj(json!({ "이름": "저가", "가격": {"amount": 100000.0, "currency": "KRW"} })),
+            )
+            .await
+            .unwrap();
+        store
+            .create(
+                &s,
+                "물건",
+                obj(json!({ "이름": "고가", "가격": {"amount": 300000.0, "currency": "KRW"} })),
+            )
+            .await
+            .unwrap();
+        store
+            .create(&s, "물건", obj(json!({ "이름": "가격없음", "가격": null })))
+            .await
+            .unwrap();
+
+        let asc = run_view(&store, &s, &block("view: v\nsource: 물건\nsort: 가격\n"))
+            .await
+            .unwrap();
+        let asc_names: Vec<&str> = asc
+            .entities
+            .iter()
+            .map(|e| e.data["이름"].as_str().unwrap())
+            .collect();
+        assert_eq!(asc_names, ["저가", "고가", "가격없음"]);
+
+        let desc = run_view(&store, &s, &block("view: v\nsource: 물건\nsort: -가격\n"))
+            .await
+            .unwrap();
+        let desc_names: Vec<&str> = desc
+            .entities
+            .iter()
+            .map(|e| e.data["이름"].as_str().unwrap())
+            .collect();
+        assert_eq!(desc_names, ["고가", "저가", "가격없음"]);
+    }
+
+    #[tokio::test]
+    async fn 집계_sum_count_min_max() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        seed(&store, &s).await;
+        // 상태=주문됨(A 30만, C 65만) 합계 95만, count 2, min 30만, max 65만
+        let b = block("view: v\nsource: 물건\nfilter: { 상태: 주문됨 }\naggregate: { 합계: sum(가격), 건수: count(가격), 최소: min(가격), 최대: max(가격) }\n");
+        let r = run_view(&store, &s, &b).await.unwrap();
+        assert_eq!(r.aggregates["합계"], serde_json::json!(950000.0));
+        assert_eq!(r.aggregates["건수"], serde_json::json!(2));
+        assert_eq!(r.aggregates["최소"], serde_json::json!(300000.0));
+        assert_eq!(r.aggregates["최대"], serde_json::json!(650000.0));
+    }
+
+    #[tokio::test]
+    async fn count는_필드_존재가_아닌_매칭_행_수를_센다() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        seed(&store, &s).await;
+        store
+            .create(
+                &s,
+                "물건",
+                obj(json!({ "이름": "D", "상태": "주문됨", "배송예정일": "2026-07-22" })),
+            )
+            .await
+            .unwrap();
+
+        let r = run_view(
+            &store,
+            &s,
+            &block("view: v\nsource: 물건\nfilter: { 상태: 주문됨 }\naggregate: { 건수: count(가격) }\n"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(r.entities.len(), 3);
+        assert_eq!(r.aggregates["건수"], serde_json::json!(3));
+    }
+
+    #[tokio::test]
+    async fn 집계_없는_필드는_unknownfield() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        let b = block("view: v\nsource: 물건\naggregate: { 합계: sum(유령) }\n");
+        let err = run_view(&store, &s, &b).await.unwrap_err();
+        assert!(
+            matches!(&err, ViewError::UnknownField { field, .. } if field == "유령"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn 잘못된_집계식_빈필드와_닫히지_않은_괄호는_badaggregate() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+
+        for expr in ["sum()", "sum(가격"] {
+            let b = block(&format!(
+                "view: v\nsource: 물건\naggregate: {{ 합계: {expr} }}\n"
+            ));
+            let err = run_view(&store, &s, &b).await.unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ViewError::BadAggregate { expr: bad_expr, .. }
+                        if bad_expr.as_str() == expr
+                ),
+                "unexpected error for {expr}: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn money_집계는_통화가_섞이면_에러() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        store
+            .create(
+                &s,
+                "물건",
+                obj(json!({ "이름": "KRW", "상태": "주문됨", "가격": {"amount": 300000.0, "currency": "KRW"} })),
+            )
+            .await
+            .unwrap();
+        store
+            .create(
+                &s,
+                "물건",
+                obj(json!({ "이름": "USD", "상태": "주문됨", "가격": {"amount": 200.0, "currency": "USD"} })),
+            )
+            .await
+            .unwrap();
+
+        let b = block("view: v\nsource: 물건\nfilter: { 상태: 주문됨 }\naggregate: { 합계: sum(가격) }\n");
+        let err = run_view(&store, &s, &b).await.unwrap_err();
+        assert!(
+            matches!(&err, ViewError::CurrencyMismatch { field, .. } if field == "가격"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn 집계는_정렬_방향과_무관하게_같은_필터집합을_사용한다() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        seed(&store, &s).await;
+
+        let asc = run_view(
+            &store,
+            &s,
+            &block("view: v\nsource: 물건\nsort: 가격\naggregate: { 합계: sum(가격) }\n"),
+        )
+        .await
+        .unwrap();
+        let desc = run_view(
+            &store,
+            &s,
+            &block("view: v\nsource: 물건\nsort: -가격\naggregate: { 합계: sum(가격) }\n"),
+        )
+        .await
+        .unwrap();
+
+        let asc_names: Vec<&str> = asc
+            .entities
+            .iter()
+            .map(|e| e.data["이름"].as_str().unwrap())
+            .collect();
+        let desc_names: Vec<&str> = desc
+            .entities
+            .iter()
+            .map(|e| e.data["이름"].as_str().unwrap())
+            .collect();
+        assert_eq!(asc_names, ["B", "A", "C"]);
+        assert_eq!(desc_names, ["C", "A", "B"]);
+        assert_eq!(asc.aggregates["합계"], serde_json::json!(1050000.0));
+        assert_eq!(desc.aggregates["합계"], asc.aggregates["합계"]);
+    }
+
+    #[tokio::test]
+    async fn 잘못된_집계식은_에러() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        let b = block("view: v\nsource: 물건\naggregate: { 합계: total(가격) }\n");
+        assert!(run_view(&store, &s, &b).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn 지원하지_않는_집계함수는_필드검증보다_먼저_badaggregate() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        let b = block("view: v\nsource: 물건\naggregate: { 합계: total(유령) }\n");
+        let err = run_view(&store, &s, &b).await.unwrap_err();
+        assert!(
+            matches!(&err, ViewError::BadAggregate { expr, .. } if expr == "total(유령)"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn 없는_필드_필터는_에러() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        let err = run_view(
+            &store,
+            &s,
+            &block("view: v\nsource: 물건\nfilter: { 유령: 1 }\n"),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("유령"));
+    }
+
+    #[tokio::test]
+    async fn 없는_source는_에러() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        let err = run_view(&store, &s, &block("view: v\nsource: 유령타입\n"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("유령타입"));
+    }
+}
