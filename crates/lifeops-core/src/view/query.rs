@@ -244,7 +244,9 @@ fn numeric_extreme(field: &str, entities: &[Entity], combine: impl Fn(f64, f64) 
         .unwrap_or(Value::Null)
 }
 
-fn sort_entities(entities: &mut [Entity], schema: &ResolvedSchema, sort: &str) {
+/// 엔티티 슬라이스를 `sort` 스펙(`-` 접두사는 내림차순)에 따라 정렬한다.
+/// 뷰 엔진 내부와 서버의 자동 기본 뷰(GET /api/entities)가 동일한 정렬 규칙을 공유하기 위해 공개됨.
+pub fn sort_entities(entities: &mut [Entity], schema: &ResolvedSchema, sort: &str) {
     let (descending, field) = match sort.strip_prefix('-') {
         Some(field) => (true, field),
         None => (false, sort),

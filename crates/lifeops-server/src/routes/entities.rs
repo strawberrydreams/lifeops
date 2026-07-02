@@ -3,30 +3,70 @@ use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use lifeops_core::error::CoreError;
+use lifeops_core::view::sort_entities;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 
-/// GET /api/entities?type=물건&<필드>=<값>...
+fn unknown_filter_field_error(ty: &str, field: &str) -> ApiError {
+    ApiError(
+        StatusCode::BAD_REQUEST,
+        json!({ "error": { "code": "view", "message": format!("타입 '{ty}'에 없는 필터 필드 '{field}'") } }),
+    )
+}
+
+/// GET /api/entities?type=물건&<필드>=<값>...&sort=[-]<필드>
+///
+/// `type`이 있는 경우: 스키마를 화이트리스트로 사용해 필터/정렬 필드를 검증하고
+/// (뷰 엔진과 동일한 규칙으로) 정렬까지 적용하는 "자동 기본 뷰"로 동작한다.
+/// `type`이 없는 경우(다중 타입 목록)는 검증할 단일 스키마가 없으므로
+/// 필드 화이트리스트와 정렬을 적용하지 않는다(문자열 eq 필터만 유지).
 pub async fn list(
     State(st): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<Value>, ApiError> {
     let ty = params.get("type").cloned().unwrap_or_default();
     let schemas = st.schemas.read().await;
-    // type이 있으면 family 확장, 없으면 전체 타입
-    let types: Vec<String> = if ty.is_empty() {
-        schemas.names().iter().map(|s| s.to_string()).collect()
-    } else {
-        schemas.family_of(&ty)
-    };
+
+    if ty.is_empty() {
+        // 타입 미지정 다중 타입 목록은 스키마 화이트리스트/정렬 미적용
+        let types: Vec<String> = schemas.names().iter().map(|s| s.to_string()).collect();
+        let mut entities = st.store.list(&types).await?;
+        for (k, v) in &params {
+            if k == "type" || k == "sort" {
+                continue;
+            }
+            entities.retain(|e| e.data.get(k).and_then(Value::as_str) == Some(v.as_str()));
+        }
+        return Ok(Json(json!(entities)));
+    }
+
+    let schema = schemas
+        .get(&ty)
+        .ok_or_else(|| ApiError::from(CoreError::UnknownType(ty.clone())))?;
+
+    let types = schemas.family_of(&ty);
     let mut entities = st.store.list(&types).await?;
-    // type 외의 쿼리 파라미터는 eq 필터(문자열 일치)
+
+    // type/sort 외의 쿼리 파라미터는 eq 필터(문자열 일치), 스키마에 없는 필드는 400
     for (k, v) in &params {
         if k == "type" || k == "sort" {
             continue;
         }
+        if !schema.fields.contains_key(k) {
+            return Err(unknown_filter_field_error(&ty, k));
+        }
         entities.retain(|e| e.data.get(k).and_then(Value::as_str) == Some(v.as_str()));
     }
+
+    if let Some(sort) = params.get("sort") {
+        let field = sort.strip_prefix('-').unwrap_or(sort);
+        if !schema.fields.contains_key(field) {
+            return Err(unknown_filter_field_error(&ty, field));
+        }
+        sort_entities(&mut entities, schema, sort);
+    }
+
     Ok(Json(json!(entities)))
 }
 
@@ -174,5 +214,48 @@ mod tests {
             Request::builder().method("DELETE").uri(format!("/api/entities/{wid}")).body(Body::empty()).unwrap()
         ).await.unwrap();
         assert_eq!(res.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn 목록_sort_적용됨() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+        for (이름, 가격) in [("A", 300000.0), ("B", 100000.0), ("C", 650000.0)] {
+            app.clone().oneshot(post("/api/entities", json!({
+                "type": "시계",
+                "data": { "이름": 이름, "가격": { "amount": 가격, "currency": "KRW" } }
+            }))).await.unwrap();
+        }
+
+        let res = app.oneshot(
+            Request::builder().uri("/api/entities?type=물건&sort=-가격").body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let list = body_json(res).await;
+        let names: Vec<&str> = list.as_array().unwrap().iter()
+            .map(|e| e["data"]["이름"].as_str().unwrap()).collect();
+        assert_eq!(names, ["C", "A", "B"]);
+    }
+
+    #[tokio::test]
+    async fn 목록_없는_필터필드는_400() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+        let res = app.oneshot(
+            Request::builder().uri("/api/entities?type=물건&유령=x").body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "view");
+    }
+
+    #[tokio::test]
+    async fn 목록_없는_타입은_404() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+        let res = app.oneshot(
+            Request::builder().uri("/api/entities?type=유령타입").body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 }

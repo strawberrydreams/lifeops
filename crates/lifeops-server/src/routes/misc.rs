@@ -55,14 +55,14 @@ pub async fn reload(State(st): State<AppState>) -> Result<Json<Value>, ApiError>
         json!({ "error": { "code": "reload_schema", "message": e.to_string() } }),
     ))?;
     let new_pages = PageSet::load_dir(&st.views_dir)?;
-    {
-        let mut s = st.schemas.write().await;
-        *s = new_schemas;
-    }
-    {
-        let mut p = st.pages.write().await;
-        *p = new_pages;
-    }
+    // 두 락을 한 스코프에서 잡고 함께 교체해, 어떤 요청도
+    // "새 스키마 + 옛 페이지" 같은 중간 상태를 관찰할 수 없게 한다.
+    let mut s = st.schemas.write().await;
+    let mut p = st.pages.write().await;
+    *s = new_schemas;
+    *p = new_pages;
+    drop(p);
+    drop(s);
     Ok(Json(json!({ "ok": true })))
 }
 
