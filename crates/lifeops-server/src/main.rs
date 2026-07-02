@@ -1,5 +1,6 @@
 mod app;
 mod error;
+mod routes;
 mod state;
 
 use lifeops_core::entity::EntityStore;

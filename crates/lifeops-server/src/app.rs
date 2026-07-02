@@ -1,3 +1,4 @@
+use crate::routes::entities;
 use crate::state::AppState;
 use axum::routing::get;
 use axum::Router;
@@ -5,6 +6,11 @@ use axum::Router;
 pub fn build_app(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(|| async { "ok" }))
+        .route("/api/entities", get(entities::list).post(entities::create))
+        .route(
+            "/api/entities/{id}",
+            get(entities::get_one).patch(entities::update).delete(entities::delete),
+        )
         .with_state(state)
 }
 
