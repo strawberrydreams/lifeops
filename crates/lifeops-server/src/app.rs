@@ -1,10 +1,12 @@
 use crate::routes::{entities, misc};
 use crate::state::AppState;
+use crate::static_files::spa_fallback;
 use axum::routing::{get, post};
 use axum::Router;
+use tower_http::services::ServeDir;
 
 pub fn build_app(state: AppState) -> Router {
-    Router::new()
+    let api = Router::new()
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/entities", get(entities::list).post(entities::create))
         .route(
@@ -14,7 +16,12 @@ pub fn build_app(state: AppState) -> Router {
         .route("/api/schemas", get(misc::schemas))
         .route("/api/pages/{name}", get(misc::page))
         .route("/api/export", get(misc::export))
-        .route("/api/reload", post(misc::reload))
+        .route("/api/reload", post(misc::reload));
+
+    Router::new()
+        .merge(api)
+        .nest_service("/assets", ServeDir::new("frontend/dist/assets"))
+        .fallback(spa_fallback)
         .with_state(state)
 }
 

@@ -1,7 +1,9 @@
 mod app;
+mod backup;
 mod error;
 mod routes;
 mod state;
+mod static_files;
 
 use lifeops_core::entity::EntityStore;
 use lifeops_core::schema::SchemaSet;
@@ -20,6 +22,12 @@ async fn main() {
         .await
         .expect("DB 열기 실패");
     let state = state::AppState::new(schemas, pages, store, schemas_dir, views_dir);
+
+    backup::spawn_daily_backup(
+        std::path::PathBuf::from("data/lifeops.db"),
+        std::path::PathBuf::from("backups"),
+        7,
+    );
 
     let app = app::build_app(state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
