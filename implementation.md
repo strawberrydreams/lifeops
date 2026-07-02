@@ -2,6 +2,16 @@
 
 ## 2026-07-02
 
+- Task 5 시작: `view::page`는 요구된 TDD 순서대로 먼저 페이지 디렉터리 로드/실행, broken YAML 파일명 포함 오류, missing directory 빈 `PageSet` 테스트를 추가했다. production 구현 전 `view::mod`에 `page` 모듈과 공개 재수출만 연결했다.
+- red 확인: `cargo test -p lifeops-core view::page`는 `page::run_page`, `page::PageSet` 미정의 컴파일 오류로 실패했다. 새 테스트와 공개 API가 실제 구현을 요구함을 확인했다.
+- 변경: `PageSet::load_dir`는 존재하지 않는 디렉터리를 빈 세트로 처리하고, `.yaml`/`.yml` 파일만 파일명 순서로 읽어 `PageDef.page` 이름을 키로 `IndexMap`에 보관한다.
+- 변경: 페이지 YAML 파싱 실패는 `ViewError::Parse { file, source }`로 감싸 파일명만 포함한다. 파일 읽기/디렉터리 읽기 오류는 기존 `ViewError::Io` 변환을 사용한다.
+- 변경: `run_page`는 page block 순서대로 기존 `run_view`를 호출하고 `PageResult { page, blocks }`를 만든다. block 실행 오류는 그대로 전파한다.
+- green 확인: `cargo test -p lifeops-core view`는 20 passed. 이후 `cargo test -p lifeops-core && cargo clippy -p lifeops-core -- -D warnings`도 통과했다.
+- 리뷰 수정: 중복 `page:` 이름 회귀 테스트를 먼저 추가했고, 기존 구현이 뒤 파일로 앞 파일을 덮어써 `unwrap_err()`가 실패하는 red 상태를 확인했다. `ViewError::DuplicatePage { file, page, first }`를 추가해 현재 파일명, 중복 페이지명, 최초 파일명을 함께 보고한다.
+- 결정: `PageSet` 공개 API는 유지하고, 로드 중 별도 `IndexMap<String, String>`으로 page name의 최초 파일명을 추적한다. 정상 경로의 `names()` 순서는 여전히 파일명 순서를 따른다.
+- 변경: `read_dir` 순회에서 `filter_map(Result::ok)`를 제거하고 각 `DirEntry` 오류를 `?`로 전파한다. 읽을 수 없는 directory entry를 조용히 건너뛰지 않기 위함이다.
+- 리뷰 수정 green 확인: `cargo test -p lifeops-core view::page`는 5 passed. 이후 `cargo test -p lifeops-core && cargo clippy -p lifeops-core -- -D warnings`도 54 unit tests, 1 integration test, doc-tests, clippy까지 통과했다.
 - Task 4 시작: `view::query` 집계는 먼저 `sum/count/min/max`와 잘못된 집계식 테스트를 추가했고, production 변경 전 `cargo test -p lifeops-core view::query::tests::집계`가 빈 `aggregates` 때문에 `합계` 키 조회에서 실패하는 red 상태를 확인했다.
 - 변경: `run_view`는 filter만 적용된 정렬 전 엔티티 목록을 기준으로 `block.aggregate`를 선언 순서대로 계산해 `ViewResult.aggregates`에 넣는다. 정렬은 `ViewResult.entities` 표시 순서에만 영향을 주고 aggregate 입력 순서는 바꾸지 않는다.
 - 결정: 집계식 파서는 `func(field)` 형태만 허용하고 함수명/필드명의 앞뒤 공백은 무시한다. 빈 함수/필드나 괄호가 남은 malformed 식은 `ViewError::BadAggregate`로 처리한다.

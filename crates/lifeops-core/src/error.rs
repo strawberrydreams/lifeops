@@ -62,6 +62,11 @@ pub enum ViewError {
         file: String,
         source: serde_yaml::Error,
     },
+    DuplicatePage {
+        file: String,
+        page: String,
+        first: String,
+    },
     Core(crate::error::CoreError),
 }
 
@@ -87,6 +92,9 @@ impl std::fmt::Display for ViewError {
             ViewError::Parse { file, source } => {
                 write!(f, "{file}: 페이지 YAML 파싱 실패: {source}")
             }
+            ViewError::DuplicatePage { file, page, first } => {
+                write!(f, "{file}: 페이지 '{page}' 중복 정의 (이미 {first}에 정의됨)")
+            }
             ViewError::Core(source) => source.fmt(f),
         }
     }
@@ -101,7 +109,8 @@ impl std::error::Error for ViewError {
             ViewError::UnknownSource(_)
             | ViewError::UnknownField { .. }
             | ViewError::BadAggregate { .. }
-            | ViewError::CurrencyMismatch { .. } => None,
+            | ViewError::CurrencyMismatch { .. }
+            | ViewError::DuplicatePage { .. } => None,
         }
     }
 }
