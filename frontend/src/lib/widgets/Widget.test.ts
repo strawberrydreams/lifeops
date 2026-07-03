@@ -1,8 +1,11 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, fireEvent } from "@testing-library/svelte";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { render, fireEvent, waitFor } from "@testing-library/svelte";
 import Widget from "./Widget.svelte";
 import { parseKind } from "../kind";
 import type { ResolvedField } from "../types";
+import * as api from "../api";
+
+afterEach(() => vi.restoreAllMocks());
 
 const f = (kind: string, extra: Partial<ResolvedField> = {}): ResolvedField => ({
   kind,
@@ -75,6 +78,24 @@ describe("Widget 매핑", () => {
     expect(container.querySelector(".list")).not.toBeNull();
     expect(container.querySelector('input[type="text"]')).not.toBeNull();
     expect(getByText("+ 추가")).toBeInTheDocument();
+  });
+
+  it("ref → RefPicker로 라우팅하고 선택 시 id onchange", async () => {
+    const spy = vi.spyOn(api, "listEntities").mockResolvedValue([
+      { id: "w1", type: "시계", data: { 이름: "세이코 미쿠" }, created_at: "", updated_at: "" },
+    ]);
+    const onchange = vi.fn();
+    const { getByRole, findByText } = render(Widget, {
+      field: f("ref", { target: "물건" }),
+      value: null,
+      onchange,
+    });
+
+    await fireEvent.input(getByRole("textbox"), { target: { value: "세이코" } });
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("물건", {}));
+    await fireEvent.click(await findByText("세이코 미쿠"));
+
+    expect(onchange).toHaveBeenCalledWith("w1");
   });
 
   it("parseKind는 list kind를 base와 list flag로 분리", () => {
