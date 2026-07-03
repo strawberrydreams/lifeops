@@ -3,6 +3,7 @@ import { render, fireEvent, waitFor } from "@testing-library/svelte";
 import EntityTable from "./EntityTable.svelte";
 import type { ResolvedSchema, Entity } from "./types";
 import * as api from "./api";
+import { ApiError } from "./api";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -40,5 +41,30 @@ describe("EntityTable 인라인 편집", () => {
     const cell = getByText("위시");
     await fireEvent.keyDown(cell, { key: "Enter" });
     expect(getByRole("combobox")).toBeInTheDocument();
+  });
+
+  it("인라인_저장_실패시_편집유지_에러표시", async () => {
+    vi.spyOn(api, "updateEntity").mockRejectedValue(
+      new ApiError(400, "validation", "검증 실패", { fields: [{ field: "상태", message: "필수 필드" }] })
+    );
+    const { getByText, getByRole, findByText } = render(EntityTable, { schema, entities });
+    await fireEvent.click(getByText("위시")); // 상태 셀 → 편집 모드 진입
+    const select = getByRole("combobox");
+    await fireEvent.change(select, { target: { value: "보유" } });
+    await fireEvent.keyDown(select, { key: "Enter" });
+
+    expect(await findByText(/검증 실패/)).toBeInTheDocument();
+    // 편집 모드가 유지되어야 함 — 위젯이 여전히 존재해야 한다.
+    expect(getByRole("combobox")).toBeInTheDocument();
+  });
+
+  it("포커스아웃시_커밋", async () => {
+    const spy = vi.spyOn(api, "updateEntity").mockResolvedValue({ ...entities[0], data: { 이름: "A", 상태: "보유" } });
+    const { getByText, getByRole } = render(EntityTable, { schema, entities });
+    await fireEvent.click(getByText("위시")); // 상태 셀 → 편집 모드 진입
+    const select = getByRole("combobox");
+    await fireEvent.change(select, { target: { value: "보유" } });
+    await fireEvent.focusOut(select, { relatedTarget: document.body });
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("e1", { 상태: "보유" }));
   });
 });

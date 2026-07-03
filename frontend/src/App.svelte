@@ -29,7 +29,7 @@
       {:else if router.route.name === "new"}
         <New schemas={schemas} type={router.route.type} />
       {:else if router.route.name === "page"}
-        <PageView pageName={router.route.pageName} />
+        <PageView pageName={router.route.pageName} schemas={schemas} />
       {/if}
     </main>
   {:else}

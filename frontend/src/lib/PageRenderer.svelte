@@ -1,7 +1,16 @@
 <script lang="ts">
   import type { PageBlock } from "./api";
+  import type { SchemaMap } from "./types";
+  import { formatValue } from "./format";
 
-  let { page, blocks }: { page: string; blocks: PageBlock[] } = $props();
+  let { page, blocks, schemas }: { page: string; blocks: PageBlock[]; schemas: SchemaMap } = $props();
+
+  function display(e: PageBlock["entities"][number], c: string): string {
+    const field = schemas[e.type]?.fields?.[c];
+    if (field) return formatValue(field, e.data[c]);
+    const v = e.data[c];
+    return typeof v === "object" && v !== null ? JSON.stringify(v) : String(v ?? "");
+  }
 </script>
 
 <div class="page">
@@ -17,7 +26,7 @@
       {#if block.layout === "checklist"}
         <ul class="checklist">
           {#each block.entities as e}
-            <li><input type="checkbox" checked={e.data["완료"] === true} disabled /> {String(e.data["내용"] ?? e.data["이름"] ?? e.id)}</li>
+            <li><input type="checkbox" checked={e.data["완료"] === true} disabled /> {display(e, "내용") || display(e, "이름") || e.id}</li>
           {/each}
         </ul>
       {:else if block.layout === "card"}
@@ -25,7 +34,7 @@
           {#each block.entities as e}
             <div class="card">
               {#each block.columns ?? Object.keys(e.data) as c}
-                <div class="card-field">{c}: {String(e.data[c] ?? "")}</div>
+                <div class="card-field">{c}: {display(e, c)}</div>
               {/each}
             </div>
           {/each}
@@ -35,7 +44,7 @@
           <thead><tr>{#each block.columns ?? [] as c}<th>{c}</th>{/each}</tr></thead>
           <tbody>
             {#each block.entities as e}
-              <tr>{#each block.columns ?? [] as c}<td>{String(e.data[c] ?? "")}</td>{/each}</tr>
+              <tr>{#each block.columns ?? [] as c}<td>{display(e, c)}</td>{/each}</tr>
             {/each}
           </tbody>
         </table>
