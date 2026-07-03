@@ -40,6 +40,8 @@
             {#if editing && editing.id === e.id && editing.field === field}
               <span
                 role="cell"
+                tabindex="-1"
+                onclick={(ev) => ev.stopPropagation()}
                 onkeydown={(ev) => { if (ev.key === "Enter") commit(e, field); if (ev.key === "Escape") editing = null; }}
               >
                 <Widget field={schema.fields[field]} value={draft} onchange={(v) => (draft = v)} />
@@ -50,6 +52,7 @@
                 role="button"
                 tabindex="0"
                 onclick={(ev) => { ev.stopPropagation(); startEdit(e, field); }}
+                onkeydown={(ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); startEdit(e, field); } }}
               >{formatValue(schema.fields[field], e.data[field])}</span>
             {/if}
           </td>

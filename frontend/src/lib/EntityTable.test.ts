@@ -25,4 +25,20 @@ describe("EntityTable 인라인 편집", () => {
     await waitFor(() => expect(spy).toHaveBeenCalledWith("e1", { 상태: "보유" }));
     expect(await (async () => getByText("보유"))()).toBeInTheDocument();
   });
+
+  it("편집중_위젯_클릭은_행이동을_유발하지_않는다", async () => {
+    const rowClickSpy = vi.fn();
+    const { getByText, getByRole } = render(EntityTable, { schema, entities, onrowclick: rowClickSpy });
+    await fireEvent.click(getByText("위시")); // 상태 셀 → 편집 모드 진입
+    const select = getByRole("combobox");
+    await fireEvent.click(select); // 위젯 내부 클릭
+    expect(rowClickSpy).not.toHaveBeenCalled();
+  });
+
+  it("표시 모드 셀에서 Enter 키 → 편집 모드 진입(위젯 렌더)", async () => {
+    const { getByText, getByRole } = render(EntityTable, { schema, entities });
+    const cell = getByText("위시");
+    await fireEvent.keyDown(cell, { key: "Enter" });
+    expect(getByRole("combobox")).toBeInTheDocument();
+  });
 });
