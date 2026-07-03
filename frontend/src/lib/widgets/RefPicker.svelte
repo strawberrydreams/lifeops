@@ -6,10 +6,16 @@
     field,
     value,
     onchange,
+    id,
+    labelledby,
+    describedby,
   }: {
     field: ResolvedField;
     value: string | null;
     onchange: (v: string | null) => void;
+    id?: string;
+    labelledby?: string;
+    describedby?: string;
   } = $props();
 
   let query = $state("");
@@ -53,9 +59,12 @@
 
 <div class="refpicker">
   <input
+    {id}
     type="text"
     placeholder="검색..."
     value={query || (value ?? "")}
+    aria-labelledby={labelledby}
+    aria-describedby={describedby}
     oninput={(e) => search((e.currentTarget as HTMLInputElement).value)}
   />
   {#if open && results.length > 0}

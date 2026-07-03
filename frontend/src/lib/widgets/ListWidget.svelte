@@ -6,10 +6,16 @@
     field,
     value,
     onchange,
+    id,
+    labelledby,
+    describedby,
   }: {
     field: ResolvedField;
     value: unknown[] | null;
     onchange: (v: unknown[]) => void;
+    id?: string;
+    labelledby?: string;
+    describedby?: string;
   } = $props();
 
   const items = $derived((value ?? []) as unknown[]);
@@ -36,10 +42,17 @@
   }
 </script>
 
-<div class="list">
+<div class="list" {id} role="group" aria-labelledby={labelledby} aria-describedby={describedby}>
   {#each items as item, i}
     <div class="list-row">
-      <Widget field={field} value={item} onchange={(v) => setAt(i, v)} />
+      <Widget
+        id={id ? `${id}-item-${i}` : undefined}
+        {field}
+        value={item}
+        onchange={(v) => setAt(i, v)}
+        {labelledby}
+        {describedby}
+      />
       <button type="button" onclick={() => removeAt(i)}>✕</button>
     </div>
   {/each}

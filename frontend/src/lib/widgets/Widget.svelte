@@ -10,10 +10,16 @@
     field,
     value,
     onchange,
+    id,
+    labelledby,
+    describedby,
   }: {
     field: ResolvedField;
     value: unknown;
     onchange: (v: unknown) => void;
+    id?: string;
+    labelledby?: string;
+    describedby?: string;
   } = $props();
 
   const parsed = $derived(parseKind(field.kind));
@@ -21,24 +27,30 @@
 </script>
 
 {#if parsed.list}
-  <ListWidget field={{ ...field, kind: parsed.base }} value={value as unknown[] | null} {onchange} />
+  <ListWidget field={{ ...field, kind: parsed.base }} value={value as unknown[] | null} {onchange} {id} {labelledby} {describedby} />
 {:else if kind === "money"}
-  <MoneyWidget value={value as { amount: number; currency: string } | null} {onchange} />
+  <MoneyWidget value={value as { amount: number; currency: string } | null} {onchange} {id} {labelledby} {describedby} />
 {:else if kind === "ref"}
-  <RefPicker field={field} value={value as string | null} onchange={onchange} />
+  <RefPicker field={field} value={value as string | null} onchange={onchange} {id} {labelledby} {describedby} />
 {:else if kind === "richtext"}
-  <NoteEditor value={value as string | null} onchange={onchange} />
+  <NoteEditor value={value as string | null} onchange={onchange} {id} {labelledby} {describedby} />
 {:else if kind === "text" || kind === "image" || kind === "url"}
   <input
+    {id}
     type={kind === "url" ? "url" : "text"}
     value={(value as string) ?? ""}
+    aria-labelledby={labelledby}
+    aria-describedby={describedby}
     oninput={(e) => onchange((e.currentTarget as HTMLInputElement).value)}
   />
 {:else if kind === "number"}
   <span>
     <input
+      {id}
       type="number"
       value={value === null || value === undefined ? "" : (value as number)}
+      aria-labelledby={labelledby}
+      aria-describedby={describedby}
       oninput={(e) => {
         const v = (e.currentTarget as HTMLInputElement).value;
         onchange(v === "" ? null : Number(v));
@@ -48,19 +60,28 @@
   </span>
 {:else if kind === "date"}
   <input
+    {id}
     type="date"
     value={(value as string) ?? ""}
+    aria-labelledby={labelledby}
+    aria-describedby={describedby}
     oninput={(e) => onchange((e.currentTarget as HTMLInputElement).value || null)}
   />
 {:else if kind === "bool"}
   <input
+    {id}
     type="checkbox"
     checked={value === true}
+    aria-labelledby={labelledby}
+    aria-describedby={describedby}
     onchange={(e) => onchange((e.currentTarget as HTMLInputElement).checked)}
   />
 {:else if kind === "enum"}
   <select
+    {id}
     value={(value as string) ?? ""}
+    aria-labelledby={labelledby}
+    aria-describedby={describedby}
     onchange={(e) => onchange((e.currentTarget as HTMLSelectElement).value || null)}
   >
     <option value=""></option>
@@ -71,7 +92,10 @@
 {:else}
   <!-- Unknown kinds use a conservative text fallback. -->
   <input
+    {id}
     value={value === null || value === undefined ? "" : String(value)}
+    aria-labelledby={labelledby}
+    aria-describedby={describedby}
     oninput={(e) => onchange((e.currentTarget as HTMLInputElement).value)}
   />
 {/if}

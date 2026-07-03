@@ -4,7 +4,19 @@
   import StarterKit from "@tiptap/starter-kit";
   import Link from "@tiptap/extension-link";
 
-  let { value, onchange }: { value: string | null; onchange: (html: string) => void } = $props();
+  let {
+    value,
+    onchange,
+    id,
+    labelledby,
+    describedby,
+  }: {
+    value: string | null;
+    onchange: (html: string) => void;
+    id?: string;
+    labelledby?: string;
+    describedby?: string;
+  } = $props();
 
   let element = $state<HTMLDivElement>();
   let editor: Editor | undefined = $state();
@@ -37,7 +49,7 @@
   }
 </script>
 
-<div class="note-editor">
+<div class="note-editor" {id} role="group" aria-labelledby={labelledby} aria-describedby={describedby}>
   {#if editor}
     <div class="toolbar">
       <button type="button" onclick={() => cmd(() => editor!.chain().focus().toggleBold().run())}
