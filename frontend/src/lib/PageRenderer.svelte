@@ -2,6 +2,7 @@
   import type { PageBlock } from "./api";
   import type { SchemaMap } from "./types";
   import { formatValue } from "./format";
+  import ChecklistWidget from "./widgets/ChecklistWidget.svelte";
 
   let { page, blocks, schemas }: { page: string; blocks: PageBlock[]; schemas: SchemaMap } = $props();
 
@@ -24,11 +25,7 @@
         </div>
       {/if}
       {#if block.layout === "checklist"}
-        <ul class="checklist">
-          {#each block.entities as e}
-            <li><input type="checkbox" checked={e.data["완료"] === true} disabled /> {display(e, "내용") || display(e, "이름") || e.id}</li>
-          {/each}
-        </ul>
+        <ChecklistWidget block={block} schemas={schemas} />
       {:else if block.layout === "card"}
         <div class="cards">
           {#each block.entities as e}

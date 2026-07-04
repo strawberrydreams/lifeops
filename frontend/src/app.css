@@ -40,3 +40,16 @@
 .sidebar .chev {
   float: right;
 }
+
+/* ChecklistWidget */
+.todo .checklist { list-style: none; padding: 0; }
+.todo .checklist li { display: flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0; }
+.todo .title { background: none; border: none; cursor: pointer; padding: 0; font-size: 1rem; }
+.todo .badge { font-size: 0.75rem; padding: 0.1rem 0.4rem; border-radius: 0.5rem; background: #eee; }
+.todo .badge.overdue { background: #fdd; color: #a00; }
+.todo .badge.due-today { background: #ffe9b3; }
+.todo .badge.priority { background: #fbe3e3; color: #a00; }
+.todo .chip { font-size: 0.75rem; border: 1px solid #ccc; border-radius: 1rem; padding: 0.05rem 0.5rem; background: #fafafa; cursor: pointer; }
+.todo .empty-card { border: 1px dashed #bbb; border-radius: 0.5rem; padding: 1rem; color: #666; }
+.todo .quick-add { width: 100%; margin-top: 0.5rem; padding: 0.4rem; }
+.todo .error { color: #a00; }

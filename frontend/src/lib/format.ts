@@ -8,6 +8,11 @@ export function formatValue(field: ResolvedField, v: unknown): string {
   return formatScalar(base, v);
 }
 
+export function todayStr(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function formatScalar(base: string, v: unknown): string {
   if (base === "money" && v && typeof v === "object") {
     const m = v as { amount: number; currency: string };
