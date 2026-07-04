@@ -45,8 +45,6 @@ pub enum SchemaError {
     },
     #[error("타입 '{ty}' 필드 '{field}': enum은 options가 필요함")]
     EnumWithoutOptions { ty: String, field: String },
-    #[error("타입 '{ty}' 필드 '{field}': ref는 target이 필요함")]
-    RefWithoutTarget { ty: String, field: String },
     #[error("타입 '{ty}': field_order에 존재하지 않는 필드 '{field}'")]
     UnknownFieldInOrder { ty: String, field: String },
     #[error("타입 '{ty}' behaviors 오류: {message}")]

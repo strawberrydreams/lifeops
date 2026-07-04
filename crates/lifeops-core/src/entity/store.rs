@@ -257,23 +257,20 @@ pub(crate) fn now_rfc3339() -> String {
 pub(crate) fn collect_refs(
     schema: &ResolvedSchema,
     data: &Map<String, Value>,
-) -> Vec<(String, String, String)> {
+) -> Vec<(String, String, Option<String>)> {
     let mut out = Vec::new();
     for (fname, fdef) in &schema.fields {
         if !fdef.kind.contains_ref() {
             continue;
         }
-        let Some(target) = &fdef.target else {
-            continue;
-        };
         match data.get(fname) {
             Some(Value::String(id)) if fdef.kind == FieldKind::Ref => {
-                out.push((fname.clone(), id.clone(), target.clone()));
+                out.push((fname.clone(), id.clone(), fdef.target.clone()));
             }
             Some(Value::Array(items)) => {
                 for item in items {
                     if let Value::String(id) = item {
-                        out.push((fname.clone(), id.clone(), target.clone()));
+                        out.push((fname.clone(), id.clone(), fdef.target.clone()));
                     }
                 }
             }
@@ -286,7 +283,7 @@ pub(crate) fn collect_refs(
 async fn check_ref_targets(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     schemas: &SchemaSet,
-    edges: &[(String, String, String)],
+    edges: &[(String, String, Option<String>)],
 ) -> Result<(), CoreError> {
     for (field, to_id, target) in edges {
         let row = sqlx::query("SELECT type FROM entities WHERE id = ?")
@@ -300,13 +297,15 @@ async fn check_ref_targets(
             }])));
         };
         let actual: String = row.get("type");
-        if !schemas.family_of(target).iter().any(|t| t == &actual) {
-            return Err(CoreError::Validation(ValidationError(vec![FieldError {
-                field: field.clone(),
-                message: format!(
-                    "참조 대상 타입 불일치: '{to_id}'는 '{actual}' 타입인데 '{target}' 타입 또는 하위 타입이어야 함"
-                ),
-            }])));
+        if let Some(target) = target {
+            if !schemas.family_of(target).iter().any(|t| t == &actual) {
+                return Err(CoreError::Validation(ValidationError(vec![FieldError {
+                    field: field.clone(),
+                    message: format!(
+                        "참조 대상 타입 불일치: '{to_id}'는 '{actual}' 타입인데 '{target}' 타입 또는 하위 타입이어야 함"
+                    ),
+                }])));
+            }
         }
     }
     Ok(())
@@ -315,7 +314,7 @@ async fn check_ref_targets(
 async fn insert_refs(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     from_id: &str,
-    edges: &[(String, String, String)],
+    edges: &[(String, String, Option<String>)],
 ) -> Result<(), CoreError> {
     for (field, to_id, _target) in edges {
         sqlx::query("INSERT OR IGNORE INTO refs (from_id, to_id, field_name) VALUES (?, ?, ?)")
@@ -430,6 +429,48 @@ mod tests {
             .await
             .unwrap();
         assert!(!todo.id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn target_없는_ref도_존재_검사는_한다() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("노트.yaml"),
+            "type: 노트\nfields:\n  제목: { kind: text, required: true }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("할일.yaml"),
+            "type: 할일\nfields:\n  내용: { kind: text, required: true }\n  관련: { kind: \"list<ref>\" }\n",
+        )
+        .unwrap();
+        let s = SchemaSet::load_dir(dir.path()).unwrap();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        let note = store
+            .create(&s, "노트", obj(json!({ "제목": "메모" })))
+            .await
+            .unwrap();
+        let todo = store
+            .create(
+                &s,
+                "할일",
+                obj(json!({ "내용": "확인", "관련": [note.id.clone()] })),
+            )
+            .await
+            .unwrap();
+        assert!(store
+            .create(
+                &s,
+                "할일",
+                obj(json!({ "내용": "x", "관련": ["ghost-id"] })),
+            )
+            .await
+            .is_err());
+
+        let backlinks = store.backlinks(&note.id).await.unwrap();
+        assert_eq!(backlinks.len(), 1);
+        assert_eq!(backlinks[0].from_id, todo.id);
+        assert_eq!(backlinks[0].field_name, "관련");
     }
 
     #[tokio::test]

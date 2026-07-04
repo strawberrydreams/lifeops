@@ -165,12 +165,6 @@ fn convert_field(ty: &str, field: &str, def: &RawFieldDef) -> Result<ResolvedFie
             field: field.to_string(),
         });
     }
-    if kind.contains_ref() && def.target.is_none() {
-        return Err(SchemaError::RefWithoutTarget {
-            ty: ty.to_string(),
-            field: field.to_string(),
-        });
-    }
     Ok(ResolvedField {
         kind,
         required: def.required,
@@ -443,13 +437,23 @@ mod tests {
     }
 
     #[test]
+    fn target_없는_ref는_허용된다() {
+        let set = set_from(&[(
+            "할일.yaml",
+            "type: 할일\nfields:\n  내용: { kind: text, required: true }\n  관련: { kind: \"list<ref>\" }\n",
+        )])
+        .unwrap();
+        let f = &set.get("할일").unwrap().fields["관련"];
+        assert_eq!(f.kind, FieldKind::List(Box::new(FieldKind::Ref)));
+        assert!(f.target.is_none());
+    }
+
+    #[test]
     fn 잘못된_kind와_제약_누락은_에러() {
         let err = set_from(&[("a.yaml", "type: A\nfields:\n  x: { kind: geo }\n")]).unwrap_err();
         assert!(err.to_string().contains("geo"));
         let err = set_from(&[("a.yaml", "type: A\nfields:\n  x: { kind: enum }\n")]).unwrap_err();
         assert!(err.to_string().contains("options"));
-        let err = set_from(&[("a.yaml", "type: A\nfields:\n  x: { kind: ref }\n")]).unwrap_err();
-        assert!(err.to_string().contains("target"));
         let set = set_from(&[
             ("물건.yaml", 물건),
             (

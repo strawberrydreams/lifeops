@@ -157,3 +157,10 @@
 - 결정: `CategoryDef`는 후속 API/frontend에서 그대로 직렬화할 수 있도록 `Deserialize`, `Serialize`, `Clone`, `PartialEq`, `Debug`를 함께 derive했다. `icon`과 `description`은 YAML 누락을 허용하기 위해 `#[serde(default)] Option<String>`으로 둔다.
 - GREEN 확인: `cargo test -p lifeops-core 카테고리`는 1 passed, `cargo test -p lifeops-core`는 unit 60 passed + integration 1 passed + doc-tests 0 passed로 통과했다.
 - 포맷 확인: task 범위 파일은 `rustfmt --edition 2021 --check crates/lifeops-core/src/schema/categories.rs crates/lifeops-core/src/schema/mod.rs`와 `git diff --check`를 통과했다. workspace 전체 `cargo fmt --check`는 기존 core/server 파일들의 포맷 diff를 보고해 이번 task에서 건드리지 않았다.
+- Task 3 target 없는 ref 허용 시작: 먼저 `resolve.rs`에 `list<ref>` target 누락 허용 테스트를 추가하고, 기존 `kind: ref` without target 에러 기대를 제거했다. `store.rs`에는 target 없는 ref가 기존 엔티티 id를 참조하면 생성되고 backlinks에 기록되며, 유령 id는 거부되는 테스트를 추가했다.
+- RED 확인: production 변경 전 `cargo test -p lifeops-core target_없는`는 2 tests 모두 `RefWithoutTarget { ty: "할일", field: "관련" }`로 실패했다. 현재 schema resolve 단계가 target 없는 ref를 막고 있음을 확인했다.
+- 변경: `convert_field`에서 ref target 필수 검증을 제거하고, 더 이상 사용하지 않는 `SchemaError::RefWithoutTarget` variant를 삭제했다.
+- 변경: store ref edge 내부 표현을 `(field, to_id, Option<target>)`으로 바꿨다. `collect_refs`는 target 유무와 무관하게 ref/list<ref> id를 수집하고, `check_ref_targets`는 항상 id 존재를 확인하되 `target: Some`일 때만 `SchemaSet::family_of(target)` 타입 검증을 수행한다. `insert_refs`는 기존처럼 refs table에는 field/to_id만 기록한다.
+- trade-off: target 없는 ref는 의도대로 "모든 타입 참조 가능"이므로 타입-family 검증을 생략한다. 대신 존재 검사와 backlink 기록은 target 있는 ref와 동일한 경로를 공유해 삭제 차단/backlinks 동작을 유지한다.
+- GREEN 확인 1: `cargo test -p lifeops-core target_없는`는 2 passed.
+- GREEN 확인 2: `cargo test`는 lifeops-core 62 unit tests + 1 integration test, lifeops-server 13 tests, doc-tests 0 tests 모두 통과했다.
