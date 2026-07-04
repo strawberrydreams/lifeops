@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render } from "@testing-library/svelte";
+import { render, screen } from "@testing-library/svelte";
 import PageRenderer from "./PageRenderer.svelte";
 import type { PageBlock } from "./api";
 import type { SchemaMap } from "./types";
@@ -51,5 +51,20 @@ describe("PageRenderer", () => {
 
     expect(getByText(/KRW/)).toBeInTheDocument();
     expect(container.textContent).not.toContain("[object Object]");
+  });
+
+  it("table 블록 제목이 browse 링크가 된다", () => {
+    const blocks: PageBlock[] = [{
+      view: "다가오는", source: "물건",
+      filter: { 상태: "주문됨", 배송예정일: { lte: "$today+7d" } }, sort: "배송예정일",
+      layout: "table" as const, columns: ["이름"], entities: [], aggregates: {},
+    }];
+    render(PageRenderer, { page: "홈", blocks, schemas: {} });
+    const link = screen.getByRole("link", { name: /다가오는/ });
+    const href = link.getAttribute("href")!;
+    expect(href).toContain("/browse/%EB%AC%BC%EA%B1%B4");
+    expect(decodeURIComponent(href)).toContain("상태=주문됨");
+    expect(decodeURIComponent(href)).toContain("배송예정일=lte:$today+7d");
+    expect(decodeURIComponent(href)).toContain("sort=배송예정일");
   });
 });

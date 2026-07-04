@@ -2,6 +2,7 @@
   import type { PageBlock } from "./api";
   import type { SchemaMap } from "./types";
   import { formatValue } from "./format";
+  import { navigate } from "./router.svelte";
   import ChecklistWidget from "./widgets/ChecklistWidget.svelte";
 
   let { page, blocks, schemas }: { page: string; blocks: PageBlock[]; schemas: SchemaMap } = $props();
@@ -12,13 +13,32 @@
     const v = e.data[c];
     return typeof v === "object" && v !== null ? JSON.stringify(v) : String(v ?? "");
   }
+
+  function browseUrl(block: PageBlock): string {
+    const params = new URLSearchParams();
+    for (const [field, cond] of Object.entries(block.filter ?? {})) {
+      if (cond !== null && typeof cond === "object") {
+        const [op, v] = Object.entries(cond as Record<string, unknown>)[0] ?? [];
+        if (op) params.set(field, `${op}:${String(v)}`);
+      } else {
+        params.set(field, String(cond));
+      }
+    }
+    if (block.sort) params.set("sort", block.sort);
+    const q = params.toString();
+    return `/browse/${encodeURIComponent(block.source)}${q ? `?${q}` : ""}`;
+  }
 </script>
 
 <div class="page">
   <h1>{page}</h1>
   {#each blocks as block}
     <section class="block">
-      <h2>{block.view}</h2>
+      {#if block.layout === "checklist"}
+        <h2>{block.view}</h2>
+      {:else}
+        <h2><a href={browseUrl(block)} onclick={(e) => { e.preventDefault(); navigate(browseUrl(block)); }}>{block.view} ›</a></h2>
+      {/if}
       {#if Object.keys(block.aggregates).length > 0}
         <div class="aggregates">
           {#each Object.entries(block.aggregates) as [k, v]}<span class="agg">{k}: {String(v)}</span>{/each}
