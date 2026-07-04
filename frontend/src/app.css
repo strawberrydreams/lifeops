@@ -60,3 +60,9 @@
 .browse-header .count { color: #888; font-size: 0.9rem; font-weight: normal; }
 .browse-header .new { padding: 0.4rem 0.8rem; cursor: pointer; }
 .empty-card { border: 1px dashed #bbb; border-radius: 0.5rem; padding: 2rem; text-align: center; color: #666; }
+
+/* ValueCell */
+.badge { padding: 0.05rem 0.4rem; border-radius: 0.5rem; }
+.badge.overdue { background: #fdd; color: #a00; }
+.badge.due-today { background: #ffe9b3; }
+.chip { font-size: 0.8rem; border: 1px solid #ccc; border-radius: 1rem; padding: 0.05rem 0.5rem; background: #fafafa; cursor: pointer; }

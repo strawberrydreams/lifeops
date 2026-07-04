@@ -29,7 +29,7 @@
       <button type="button" onclick={() => navigate(`/new/${encodeURIComponent(type)}`)}>+ {type} 추가</button>
     </div>
   {:else}
-    <EntityTable schema={schemas[type]} entities={entities} onrowclick={(e) => navigate(`/entity/${encodeURIComponent(e.id)}`)} />
+    <EntityTable schema={schemas[type]} entities={entities} schemas={schemas} onrowclick={(e) => navigate(`/entity/${encodeURIComponent(e.id)}`)} />
   {/if}
 {:else}
   <p>알 수 없는 타입: {type}</p>

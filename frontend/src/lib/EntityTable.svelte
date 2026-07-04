@@ -1,14 +1,15 @@
 <script lang="ts">
-  import type { Entity, ResolvedSchema } from "./types";
+  import type { Entity, ResolvedSchema, SchemaMap } from "./types";
   import { updateEntity, ApiError } from "./api";
-  import { formatValue } from "./format";
   import Widget from "./widgets/Widget.svelte";
+  import ValueCell from "./ValueCell.svelte";
 
-  let { schema, entities, columns, onrowclick }: {
+  let { schema, entities, columns, onrowclick, schemas = {} }: {
     schema: ResolvedSchema;
     entities: Entity[];
     columns?: string[];
     onrowclick?: (e: Entity) => void;
+    schemas?: SchemaMap;
   } = $props();
 
   let rows = $state<Entity[]>(entities);
@@ -63,7 +64,7 @@
                 tabindex="0"
                 onclick={(ev) => { ev.stopPropagation(); startEdit(e, field); }}
                 onkeydown={(ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); startEdit(e, field); } }}
-              >{formatValue(schema.fields[field], e.data[field])}</span>
+              ><ValueCell field={schema.fields[field]} value={e.data[field]} schemas={schemas} /></span>
             {/if}
           </td>
         {/each}

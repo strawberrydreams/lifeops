@@ -1,18 +1,13 @@
 <script lang="ts">
   import type { PageBlock } from "./api";
-  import type { SchemaMap } from "./types";
-  import { formatValue } from "./format";
+  import type { ResolvedField, SchemaMap } from "./types";
   import { navigate } from "./router.svelte";
   import ChecklistWidget from "./widgets/ChecklistWidget.svelte";
+  import ValueCell from "./ValueCell.svelte";
 
   let { page, blocks, schemas }: { page: string; blocks: PageBlock[]; schemas: SchemaMap } = $props();
 
-  function display(e: PageBlock["entities"][number], c: string): string {
-    const field = schemas[e.type]?.fields?.[c];
-    if (field) return formatValue(field, e.data[c]);
-    const v = e.data[c];
-    return typeof v === "object" && v !== null ? JSON.stringify(v) : String(v ?? "");
-  }
+  const textField: ResolvedField = { kind: "text", required: false };
 
   function browseUrl(block: PageBlock): string {
     const params = new URLSearchParams();
@@ -51,7 +46,7 @@
           {#each block.entities as e}
             <div class="card">
               {#each block.columns ?? Object.keys(e.data) as c}
-                <div class="card-field">{c}: {display(e, c)}</div>
+                <div class="card-field">{c}: <ValueCell field={schemas[e.type]?.fields?.[c] ?? textField} value={e.data[c]} schemas={schemas} /></div>
               {/each}
             </div>
           {/each}
@@ -61,7 +56,7 @@
           <thead><tr>{#each block.columns ?? [] as c}<th>{c}</th>{/each}</tr></thead>
           <tbody>
             {#each block.entities as e}
-              <tr>{#each block.columns ?? [] as c}<td>{display(e, c)}</td>{/each}</tr>
+              <tr>{#each block.columns ?? [] as c}<td><ValueCell field={schemas[e.type]?.fields?.[c] ?? textField} value={e.data[c]} schemas={schemas} /></td>{/each}</tr>
             {/each}
           </tbody>
         </table>
