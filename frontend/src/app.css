@@ -1,0 +1,42 @@
+/* 전역 스타일. 테스트에서 컴포넌트 <style> 전처리 문제를 피하려고
+   사이드바 등 공통 스타일은 여기 전역으로 둔다(컴포넌트는 클래스만 부여). */
+
+/* Sidebar */
+.sidebar .group-header {
+  width: 100%;
+  text-align: left;
+  font-weight: 600;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.4rem 0;
+}
+.sidebar .group ul {
+  list-style: none;
+  margin: 0;
+  padding-left: 0.9rem;
+}
+.sidebar .group li {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.sidebar .group li .add {
+  visibility: hidden;
+}
+.sidebar .group li:hover .add {
+  visibility: visible;
+}
+.sidebar .home {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.4rem 0;
+}
+.sidebar .chev {
+  float: right;
+}
