@@ -1,6 +1,6 @@
 use crate::error::SchemaError;
 use indexmap::IndexMap;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -10,9 +10,26 @@ pub struct RawSchema {
     #[serde(default)]
     pub extends: Option<String>,
     #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub behaviors: Option<RawBehaviors>,
+    #[serde(default)]
     pub fields: IndexMap<String, RawFieldDef>,
     #[serde(default)]
     pub field_order: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct RawBehaviors {
+    #[serde(default)]
+    pub recurrence: Option<RecurrenceDef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct RecurrenceDef {
+    pub flag: String,
+    pub rule: String,
+    pub date: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,7 +81,10 @@ mod tests {
         write(dir.path(), "b.yaml", "type: 물건\nfields: {}\n");
         let err = load_raw_dir(dir.path()).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("물건") && msg.contains("b.yaml"), "메시지: {msg}");
+        assert!(
+            msg.contains("물건") && msg.contains("b.yaml"),
+            "메시지: {msg}"
+        );
     }
 
     #[test]
@@ -88,8 +108,11 @@ pub fn load_raw_dir(dir: &Path) -> Result<IndexMap<String, (RawSchema, String)>,
     for path in files {
         let file = path.file_name().unwrap().to_string_lossy().to_string();
         let text = std::fs::read_to_string(&path)?;
-        let schema: RawSchema = serde_yaml::from_str(&text)
-            .map_err(|source| SchemaError::Parse { file: file.clone(), source })?;
+        let schema: RawSchema =
+            serde_yaml::from_str(&text).map_err(|source| SchemaError::Parse {
+                file: file.clone(),
+                source,
+            })?;
         if let Some((first_schema, first_file)) = out.get(&schema.name) {
             let _ = first_schema;
             return Err(SchemaError::DuplicateType {
