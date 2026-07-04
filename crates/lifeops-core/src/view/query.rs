@@ -163,6 +163,16 @@ fn match_one(actual: Option<&Value>, kind: &FieldKind, condition: &Value, today:
     }
 }
 
+/// 서버 자동 뷰(GET /api/entities)가 뷰 엔진과 동일한 필터 의미론을 쓰기 위한 진입점.
+pub fn matches_condition(
+    actual: Option<&Value>,
+    kind: &FieldKind,
+    condition: &Value,
+    today: NaiveDate,
+) -> bool {
+    match_one(actual, kind, condition, today)
+}
+
 /// date 필드의 `$today` 토큰을 실제 날짜 문자열로 치환. 그 외에는 원본 유지.
 fn normalize_arg(kind: &FieldKind, arg: &Value, today: NaiveDate) -> Value {
     if matches!(kind, FieldKind::Date) {
