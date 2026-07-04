@@ -54,7 +54,7 @@ pub async fn test_state() -> (AppState, tempfile::TempDir) {
     .unwrap();
     std::fs::write(
         sdir.join("할일.yaml"),
-        "type: 할일\nfields:\n  내용: { kind: text, required: true }\n  완료: { kind: bool }\n  관련물건: { kind: \"list<ref>\", target: 물건 }\n",
+        "type: 할일\nbehaviors:\n  recurrence: { flag: 완료, rule: 반복, date: 마감일 }\nfields:\n  내용: { kind: text, required: true }\n  완료: { kind: bool }\n  마감일: { kind: date }\n  반복: { kind: text }\n  관련물건: { kind: \"list<ref>\", target: 물건 }\n",
     )
     .unwrap();
     let schemas = SchemaSet::load_dir(&sdir).unwrap();

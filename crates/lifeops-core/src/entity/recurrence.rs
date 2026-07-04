@@ -1,4 +1,61 @@
+use crate::entity::{Entity, EntityStore};
+use crate::error::CoreError;
+use crate::schema::SchemaSet;
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
+use serde_json::Value;
+
+#[derive(Debug)]
+pub enum RecurrenceOutcome {
+    NotApplicable,
+    Spawned(Entity),
+    BadRule(String),
+}
+
+/// flag가 false→true로 바뀐 update 직후 호출. 규칙이 있으면 다음 회차 엔티티를 생성한다.
+pub async fn apply_recurrence(
+    store: &EntityStore,
+    schemas: &SchemaSet,
+    before: &Entity,
+    after: &Entity,
+    today: NaiveDate,
+) -> Result<RecurrenceOutcome, CoreError> {
+    let Some(rec) = schemas
+        .get(&after.entity_type)
+        .and_then(|s| s.behaviors.as_ref())
+        .and_then(|b| b.recurrence.as_ref())
+    else {
+        return Ok(RecurrenceOutcome::NotApplicable);
+    };
+    let was = before.data.get(&rec.flag).and_then(Value::as_bool).unwrap_or(false);
+    let now = after.data.get(&rec.flag).and_then(Value::as_bool).unwrap_or(false);
+    if was || !now {
+        return Ok(RecurrenceOutcome::NotApplicable);
+    }
+    let Some(rule_str) = after
+        .data
+        .get(&rec.rule)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(RecurrenceOutcome::NotApplicable);
+    };
+    let Some(rule) = parse_rule(rule_str) else {
+        return Ok(RecurrenceOutcome::BadRule(rule_str.to_string()));
+    };
+    let base = after
+        .data
+        .get(&rec.date)
+        .and_then(Value::as_str)
+        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        .unwrap_or(today);
+    let next = next_date(&rule, base, today);
+    let mut data = after.data.clone();
+    data.insert(rec.flag.clone(), Value::Bool(false));
+    data.insert(rec.date.clone(), Value::String(next.format("%Y-%m-%d").to_string()));
+    let spawned = store.create(schemas, &after.entity_type, data).await?;
+    Ok(RecurrenceOutcome::Spawned(spawned))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecurrenceRule {
@@ -151,5 +208,47 @@ mod tests {
         let today = d("2026-07-03");
         assert_eq!(next_date(&RecurrenceRule::Daily, d("2026-06-01"), today), d("2026-07-04"));
         assert_eq!(next_date(&RecurrenceRule::Weekly(None), d("2026-06-05"), today), d("2026-07-10"));
+    }
+
+    use crate::entity::EntityStore;
+    use crate::schema::SchemaSet;
+    use serde_json::{json, Map, Value};
+
+    fn obj(v: Value) -> Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    fn 할일셋() -> SchemaSet {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("할일.yaml"),
+            "type: 할일\nbehaviors:\n  recurrence: { flag: 완료, rule: 반복, date: 마감일 }\nfields:\n  내용: { kind: text, required: true }\n  완료: { kind: bool }\n  마감일: { kind: date }\n  반복: { kind: text }\n").unwrap();
+        SchemaSet::load_dir(dir.path()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn 완료_전이시_다음_회차_생성() {
+        let s = 할일셋();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        let e = store.create(&s, "할일", obj(json!({ "내용": "청소", "완료": false, "마감일": "2026-07-03", "반복": "매주" }))).await.unwrap();
+        let after = store.update(&s, &e.id, obj(json!({ "완료": true }))).await.unwrap();
+        let out = apply_recurrence(&store, &s, &e, &after, d("2026-07-03")).await.unwrap();
+        let RecurrenceOutcome::Spawned(next) = out else { panic!("Spawned 기대: {out:?}") };
+        assert_eq!(next.data["마감일"], json!("2026-07-10"));
+        assert_eq!(next.data["완료"], json!(false));
+        assert_eq!(next.data["내용"], json!("청소"));
+        assert!(store.get(&next.id).await.unwrap().is_some()); // 실제 저장됨
+    }
+
+    #[tokio::test]
+    async fn 잘못된_규칙은_badrule_이미_완료였으면_notapplicable() {
+        let s = 할일셋();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        let e = store.create(&s, "할일", obj(json!({ "내용": "x", "완료": false, "반복": "격주" }))).await.unwrap();
+        let after = store.update(&s, &e.id, obj(json!({ "완료": true }))).await.unwrap();
+        assert!(matches!(apply_recurrence(&store, &s, &e, &after, d("2026-07-03")).await.unwrap(), RecurrenceOutcome::BadRule(r) if r == "격주"));
+
+        // 이미 true → true 는 전이 아님
+        let again = store.update(&s, &after.id, obj(json!({ "내용": "y" }))).await.unwrap();
+        assert!(matches!(apply_recurrence(&store, &s, &after, &again, d("2026-07-03")).await.unwrap(), RecurrenceOutcome::NotApplicable));
     }
 }

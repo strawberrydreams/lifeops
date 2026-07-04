@@ -3,6 +3,7 @@ use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use lifeops_core::entity::recurrence::{apply_recurrence, RecurrenceOutcome};
 use lifeops_core::error::CoreError;
 use lifeops_core::view::sort_entities;
 use serde_json::{json, Map, Value};
@@ -111,8 +112,23 @@ pub async fn update(
 ) -> Result<Json<Value>, ApiError> {
     let patch: Map<String, Value> = patch.as_object().cloned().unwrap_or_default();
     let schemas = st.schemas.read().await;
+    let before = st
+        .store
+        .get(&id)
+        .await?
+        .ok_or_else(|| ApiError::from(CoreError::NotFound(id.clone())))?;
     let entity = st.store.update(&schemas, &id, patch).await?;
-    Ok(Json(json!(entity)))
+    let today = chrono::Local::now().date_naive();
+    let outcome = apply_recurrence(&st.store, &schemas, &before, &entity, today).await?;
+    let mut body = json!(entity);
+    match outcome {
+        RecurrenceOutcome::Spawned(spawned) => body["spawned"] = json!(spawned),
+        RecurrenceOutcome::BadRule(rule) => {
+            body["recurrence_warning"] = json!(format!("반복 규칙을 해석할 수 없음: {rule}"))
+        }
+        RecurrenceOutcome::NotApplicable => {}
+    }
+    Ok(Json(body))
 }
 
 /// DELETE /api/entities/:id
@@ -257,5 +273,44 @@ mod tests {
             Request::builder().uri("/api/entities?type=유령타입").body(Body::empty()).unwrap()
         ).await.unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn 반복_할일_완료시_spawned_포함() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+        let created = body_json(app.clone().oneshot(post("/api/entities",
+            json!({ "type": "할일", "data": { "내용": "청소", "완료": false, "마감일": "2026-01-05", "반복": "매주" } }))).await.unwrap()).await;
+        let id = created["id"].as_str().unwrap();
+
+        let res = app.clone().oneshot(
+            Request::builder().method("PATCH").uri(format!("/api/entities/{id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "완료": true }).to_string())).unwrap()
+        ).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["data"]["완료"], json!(true));
+        let spawned = &body["spawned"];
+        assert_eq!(spawned["data"]["완료"], json!(false));
+        assert!(spawned["data"]["마감일"].as_str().unwrap() > "2026-01-05");
+    }
+
+    #[tokio::test]
+    async fn 잘못된_반복은_경고만() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+        let created = body_json(app.clone().oneshot(post("/api/entities",
+            json!({ "type": "할일", "data": { "내용": "x", "완료": false, "반복": "격주" } }))).await.unwrap()).await;
+        let id = created["id"].as_str().unwrap();
+        let res = app.oneshot(
+            Request::builder().method("PATCH").uri(format!("/api/entities/{id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "완료": true }).to_string())).unwrap()
+        ).await.unwrap();
+        let body = body_json(res).await;
+        assert_eq!(body["data"]["완료"], json!(true)); // 완료는 진행
+        assert!(body.get("spawned").is_none());
+        assert!(body["recurrence_warning"].as_str().unwrap().contains("격주"));
     }
 }
