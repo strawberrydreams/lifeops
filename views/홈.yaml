@@ -1,0 +1,19 @@
+page: 홈
+blocks:
+  - view: 할 일
+    source: 할일
+    filter: { 완료: false }
+    sort: 마감일
+    layout: checklist
+  - view: 다가오는 마감·배송
+    source: 물건
+    filter: { 상태: 주문됨, 배송예정일: { lte: $today+7d } }
+    sort: 배송예정일
+    layout: table
+    columns: [이름, 배송예정일, 가격]
+  - view: 최근 메모
+    source: 노트
+    sort: "-updated_at"
+    limit: 5
+    layout: card
+    columns: [제목, 태그]

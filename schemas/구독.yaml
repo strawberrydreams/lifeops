@@ -1,0 +1,9 @@
+type: 구독
+category: 재무
+fields:
+  이름:       { kind: text, required: true }
+  금액:       { kind: money }
+  결제주기:   { kind: enum, options: [매월, 매년] }
+  다음결제일: { kind: date }
+  계좌:       { kind: ref, target: 계좌 }
+  상태:       { kind: enum, options: [활성, 해지], required: true }

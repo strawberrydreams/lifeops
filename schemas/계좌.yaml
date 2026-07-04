@@ -1,0 +1,7 @@
+type: 계좌
+category: 재무
+fields:
+  이름: { kind: text, required: true }
+  종류: { kind: enum, options: [입출금, 예적금, 증권, 현금], required: true }
+  잔액: { kind: money }
+  메모: { kind: text }

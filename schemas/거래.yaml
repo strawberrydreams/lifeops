@@ -1,0 +1,9 @@
+type: 거래
+category: 재무
+fields:
+  내용: { kind: text, required: true }
+  금액: { kind: money, required: true }
+  날짜: { kind: date, required: true }
+  분류: { kind: enum, options: [수입, 지출, 이체], required: true }
+  계좌: { kind: ref, target: 계좌 }
+  메모: { kind: text }

@@ -1,0 +1,10 @@
+type: 활동
+category: 취미
+fields:
+  이름:   { kind: text, required: true }
+  종류:   { kind: enum, options: [게임, 독서, 영상, 음악, 창작, 운동, 기타] }
+  상태:   { kind: enum, options: [예정, 진행중, 완료, 중단] }
+  평점:   { kind: number }
+  시작일: { kind: date }
+  종료일: { kind: date }
+  감상:   { kind: richtext }

@@ -1,6 +1,12 @@
 type: 할일
+category: 할일
+behaviors:
+  recurrence: { flag: 완료, rule: 반복, date: 마감일 }
 fields:
   내용:     { kind: text, required: true }
   완료:     { kind: bool }
   마감일:   { kind: date }
-  관련물건: { kind: "list<ref>", target: 물건 }
+  우선순위: { kind: enum, options: [높음, 보통, 낮음] }
+  반복:     { kind: text }
+  관련:     { kind: "list<ref>" }
+  메모:     { kind: text }
