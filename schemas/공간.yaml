@@ -1,0 +1,5 @@
+type: 공간
+category: 환경
+fields:
+  이름: { kind: text, required: true }
+  메모: { kind: text }

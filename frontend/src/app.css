@@ -1,0 +1,68 @@
+/* 전역 스타일. 테스트에서 컴포넌트 <style> 전처리 문제를 피하려고
+   사이드바 등 공통 스타일은 여기 전역으로 둔다(컴포넌트는 클래스만 부여). */
+
+/* Sidebar */
+.sidebar .group-header {
+  width: 100%;
+  text-align: left;
+  font-weight: 600;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.4rem 0;
+}
+.sidebar .group ul {
+  list-style: none;
+  margin: 0;
+  padding-left: 0.9rem;
+}
+.sidebar .group li {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.sidebar .group li .add {
+  visibility: hidden;
+}
+.sidebar .group li:hover .add {
+  visibility: visible;
+}
+.sidebar .home {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.4rem 0;
+}
+.sidebar .chev {
+  float: right;
+}
+
+/* ChecklistWidget */
+.todo .checklist { list-style: none; padding: 0; }
+.todo .checklist li { display: flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0; }
+.todo .title { background: none; border: none; cursor: pointer; padding: 0; font-size: 1rem; }
+.todo .badge { font-size: 0.75rem; padding: 0.1rem 0.4rem; border-radius: 0.5rem; background: #eee; }
+.todo .badge.overdue { background: #fdd; color: #a00; }
+.todo .badge.due-today { background: #ffe9b3; }
+.todo .badge.priority { background: #fbe3e3; color: #a00; }
+.todo .chip { font-size: 0.75rem; border: 1px solid #ccc; border-radius: 1rem; padding: 0.05rem 0.5rem; background: #fafafa; cursor: pointer; }
+.todo .empty-card { border: 1px dashed #bbb; border-radius: 0.5rem; padding: 1rem; color: #666; }
+.todo .quick-add { width: 100%; margin-top: 0.5rem; padding: 0.4rem; }
+.todo .error { color: #a00; }
+
+/* Browse */
+.browse-header { display: flex; justify-content: space-between; align-items: flex-end; }
+.browse-header .crumb { color: #888; margin: 0; font-size: 0.85rem; }
+.browse-header .count { color: #888; font-size: 0.9rem; font-weight: normal; }
+.browse-header .new { padding: 0.4rem 0.8rem; cursor: pointer; }
+.empty-card { border: 1px dashed #bbb; border-radius: 0.5rem; padding: 2rem; text-align: center; color: #666; }
+
+/* ValueCell */
+.badge { padding: 0.05rem 0.4rem; border-radius: 0.5rem; }
+.badge.overdue { background: #fdd; color: #a00; }
+.badge.due-today { background: #ffe9b3; }
+.chip { font-size: 0.8rem; border: 1px solid #ccc; border-radius: 1rem; padding: 0.05rem 0.5rem; background: #fafafa; cursor: pointer; }

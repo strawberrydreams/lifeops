@@ -1,4 +1,5 @@
 type: 노트
+category: 메모
 fields:
   제목: { kind: text, required: true }
   본문: { kind: richtext }

@@ -2,6 +2,7 @@ use crate::entity::{Entity, EntityStore};
 use crate::error::ViewError;
 use crate::schema::{FieldKind, ResolvedSchema, SchemaSet};
 use crate::view::model::{Filter, ViewBlock, ViewResult};
+use chrono::NaiveDate;
 use indexmap::IndexMap;
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -11,16 +12,25 @@ pub async fn run_view(
     schemas: &SchemaSet,
     block: &ViewBlock,
 ) -> Result<ViewResult, ViewError> {
+    run_view_at(store, schemas, block, chrono::Local::now().date_naive()).await
+}
+
+pub async fn run_view_at(
+    store: &EntityStore,
+    schemas: &SchemaSet,
+    block: &ViewBlock,
+    today: NaiveDate,
+) -> Result<ViewResult, ViewError> {
     let schema = schemas
         .get(&block.source)
         .ok_or_else(|| ViewError::UnknownSource(block.source.clone()))?;
 
-    validate_filter(block, schema)?;
+    validate_filter(block, schema, today)?;
     validate_sort(block, schema)?;
 
     let mut entities = store.list(&schemas.family_of(&block.source)).await?;
     if let Some(filter) = &block.filter {
-        entities.retain(|entity| matches(entity, schema, filter));
+        entities.retain(|entity| matches(entity, schema, filter, today));
     }
 
     let mut aggregates = IndexMap::new();
@@ -36,9 +46,15 @@ pub async fn run_view(
     if let Some(sort) = &block.sort {
         sort_entities(&mut entities, schema, sort);
     }
+    if let Some(limit) = block.limit {
+        entities.truncate(limit);
+    }
 
     Ok(ViewResult {
         view: block.view.clone(),
+        source: block.source.clone(),
+        filter: block.filter.clone(),
+        sort: block.sort.clone(),
         layout: block.layout,
         columns: block.columns.clone(),
         entities,
@@ -46,11 +62,45 @@ pub async fn run_view(
     })
 }
 
-fn validate_filter(block: &ViewBlock, schema: &ResolvedSchema) -> Result<(), ViewError> {
+/// `$today[±Nd]` → YYYY-MM-DD. 토큰이 아니거나 형식이 틀리면 None.
+pub fn resolve_today_token(s: &str, today: NaiveDate) -> Option<String> {
+    let rest = s.strip_prefix("$today")?;
+    let days: i64 = if rest.is_empty() {
+        0
+    } else {
+        rest.strip_suffix('d')?.parse().ok()? // "+7" / "-3"
+    };
+    Some((today + chrono::Duration::days(days)).format("%Y-%m-%d").to_string())
+}
+
+fn validate_filter(
+    block: &ViewBlock,
+    schema: &ResolvedSchema,
+    today: NaiveDate,
+) -> Result<(), ViewError> {
     if let Some(filter) = &block.filter {
-        for field in filter.keys() {
+        for (field, condition) in filter {
             if !schema.fields.contains_key(field) {
                 return Err(unknown_field(block, field));
+            }
+            let kind = &schema.fields[field].kind;
+            let args: Vec<&Value> = match condition.as_object() {
+                Some(map) => map.values().collect(),
+                None => vec![condition],
+            };
+            for arg in args {
+                if let Some(s) = arg.as_str() {
+                    if s.starts_with("$today")
+                        && (!matches!(kind, FieldKind::Date)
+                            || resolve_today_token(s, today).is_none())
+                    {
+                        return Err(ViewError::BadDateToken {
+                            view: block.view.clone(),
+                            field: field.clone(),
+                            token: s.to_string(),
+                        });
+                    }
+                }
             }
         }
     }
@@ -60,11 +110,18 @@ fn validate_filter(block: &ViewBlock, schema: &ResolvedSchema) -> Result<(), Vie
 fn validate_sort(block: &ViewBlock, schema: &ResolvedSchema) -> Result<(), ViewError> {
     if let Some(sort) = &block.sort {
         let field = sort.strip_prefix('-').unwrap_or(sort);
+        if is_system_column(field) {
+            return Ok(());
+        }
         if !schema.fields.contains_key(field) {
             return Err(unknown_field(block, field));
         }
     }
     Ok(())
+}
+
+pub fn is_system_column(field: &str) -> bool {
+    field == "updated_at" || field == "created_at"
 }
 
 fn unknown_field(block: &ViewBlock, field: &str) -> ViewError {
@@ -75,31 +132,57 @@ fn unknown_field(block: &ViewBlock, field: &str) -> ViewError {
     }
 }
 
-fn matches(entity: &Entity, schema: &ResolvedSchema, filter: &Filter) -> bool {
+fn matches(entity: &Entity, schema: &ResolvedSchema, filter: &Filter, today: NaiveDate) -> bool {
     filter.iter().all(|(field, condition)| {
         match_one(
             entity.data.get(field),
             &schema.fields[field].kind,
             condition,
+            today,
         )
     })
 }
 
-fn match_one(actual: Option<&Value>, kind: &FieldKind, condition: &Value) -> bool {
+fn match_one(actual: Option<&Value>, kind: &FieldKind, condition: &Value, today: NaiveDate) -> bool {
     let Some(op_map) = condition.as_object() else {
-        return scalar_eq(actual, condition);
+        return scalar_eq(actual, &normalize_arg(kind, condition, today));
     };
     if op_map.len() != 1 {
         return false;
     }
 
     let (op, arg) = op_map.iter().next().expect("operator map length checked");
+    let arg = normalize_arg(kind, arg, today);
     match op.as_str() {
-        "month" => date_month_matches(actual, arg),
-        "lt" => compare_filter(actual, kind, arg).is_some_and(|ord| ord == Ordering::Less),
-        "gt" => compare_filter(actual, kind, arg).is_some_and(|ord| ord == Ordering::Greater),
+        "month" => date_month_matches(actual, &arg),
+        "lt" => compare_filter(actual, kind, &arg).is_some_and(|ord| ord == Ordering::Less),
+        "gt" => compare_filter(actual, kind, &arg).is_some_and(|ord| ord == Ordering::Greater),
+        "lte" => compare_filter(actual, kind, &arg).is_some_and(|ord| ord != Ordering::Greater),
+        "gte" => compare_filter(actual, kind, &arg).is_some_and(|ord| ord != Ordering::Less),
         _ => false,
     }
+}
+
+/// 서버 자동 뷰(GET /api/entities)가 뷰 엔진과 동일한 필터 의미론을 쓰기 위한 진입점.
+pub fn matches_condition(
+    actual: Option<&Value>,
+    kind: &FieldKind,
+    condition: &Value,
+    today: NaiveDate,
+) -> bool {
+    match_one(actual, kind, condition, today)
+}
+
+/// date 필드의 `$today` 토큰을 실제 날짜 문자열로 치환. 그 외에는 원본 유지.
+fn normalize_arg(kind: &FieldKind, arg: &Value, today: NaiveDate) -> Value {
+    if matches!(kind, FieldKind::Date) {
+        if let Some(s) = arg.as_str() {
+            if let Some(resolved) = resolve_today_token(s, today) {
+                return Value::String(resolved);
+            }
+        }
+    }
+    arg.clone()
 }
 
 fn scalar_eq(actual: Option<&Value>, condition: &Value) -> bool {
@@ -251,6 +334,22 @@ pub fn sort_entities(entities: &mut [Entity], schema: &ResolvedSchema, sort: &st
         Some(field) => (true, field),
         None => (false, sort),
     };
+    if is_system_column(field) {
+        entities.sort_by(|l, r| {
+            let (a, b) = if field == "updated_at" {
+                (&l.updated_at, &r.updated_at)
+            } else {
+                (&l.created_at, &r.created_at)
+            };
+            let ord = a.cmp(b);
+            if descending {
+                ord.reverse()
+            } else {
+                ord
+            }
+        });
+        return;
+    }
     let kind = &schema.fields[field].kind;
 
     entities.sort_by(|left, right| {
@@ -654,5 +753,76 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("유령타입"));
+    }
+
+    fn d(s: &str) -> chrono::NaiveDate {
+        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    #[tokio::test]
+    async fn lte_gte와_today_토큰() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        seed(&store, &s).await; // 배송예정일: A=07-10, B=08-01, C=07-20
+        let r = run_view_at(&store, &s,
+            &block("view: v\nsource: 물건\nfilter: { 배송예정일: { lte: $today+7d } }\n"),
+            d("2026-07-03")).await.unwrap();
+        let names: Vec<&str> = r.entities.iter().map(|e| e.data["이름"].as_str().unwrap()).collect();
+        assert_eq!(names, ["A"]); // 07-10 ≤ 07-10
+
+        let r = run_view_at(&store, &s,
+            &block("view: v\nsource: 물건\nfilter: { 배송예정일: { gte: $today } }\n"),
+            d("2026-07-21")).await.unwrap();
+        assert_eq!(r.entities.len(), 1); // B(08-01)만
+    }
+
+    #[tokio::test]
+    async fn today_토큰을_비date_필드에_쓰면_에러() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        let err = run_view_at(&store, &s,
+            &block("view: v\nsource: 물건\nfilter: { 이름: { lte: $today } }\n"),
+            d("2026-07-03")).await.unwrap_err();
+        assert!(err.to_string().contains("$today"));
+    }
+
+    #[test]
+    fn 토큰_해석() {
+        assert_eq!(resolve_today_token("$today", d("2026-07-03")).unwrap(), "2026-07-03");
+        assert_eq!(resolve_today_token("$today+7d", d("2026-07-03")).unwrap(), "2026-07-10");
+        assert_eq!(resolve_today_token("$today-3d", d("2026-07-03")).unwrap(), "2026-06-30");
+        assert!(resolve_today_token("$today+7", d("2026-07-03")).is_none()); // d 누락
+        assert!(resolve_today_token("어제", d("2026-07-03")).is_none());
+    }
+
+    #[tokio::test]
+    async fn limit은_정렬_후_상위_n행() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        seed(&store, &s).await;
+        let r = run_view_at(&store, &s, &block("view: v\nsource: 물건\nsort: -가격\nlimit: 2\n"), d("2026-07-03")).await.unwrap();
+        let names: Vec<&str> = r.entities.iter().map(|e| e.data["이름"].as_str().unwrap()).collect();
+        assert_eq!(names, ["C", "A"]);
+    }
+
+    #[tokio::test]
+    async fn 시스템컬럼_updated_at_정렬() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        let a = store.create(&s, "물건", obj(json!({ "이름": "먼저" }))).await.unwrap();
+        store.create(&s, "물건", obj(json!({ "이름": "나중" }))).await.unwrap();
+        store.update(&s, &a.id, obj(json!({ "이름": "먼저(수정)" }))).await.unwrap(); // 먼저를 최신으로
+        let r = run_view_at(&store, &s, &block("view: v\nsource: 물건\nsort: \"-updated_at\"\n"), d("2026-07-03")).await.unwrap();
+        assert_eq!(r.entities[0].data["이름"], json!("먼저(수정)"));
+    }
+
+    #[tokio::test]
+    async fn viewresult는_source_filter_sort를_에코한다() {
+        let s = schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        let r = run_view_at(&store, &s, &block("view: v\nsource: 물건\nfilter: { 상태: 주문됨 }\nsort: 배송예정일\n"), d("2026-07-03")).await.unwrap();
+        assert_eq!(r.source, "물건");
+        assert_eq!(r.sort.as_deref(), Some("배송예정일"));
+        assert_eq!(r.filter.as_ref().unwrap()["상태"], json!("주문됨"));
     }
 }

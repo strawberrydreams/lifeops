@@ -1,0 +1,8 @@
+type: 소모품
+category: 환경
+fields:
+  이름:         { kind: text, required: true }
+  위치:         { kind: ref, target: 공간 }
+  교체주기:     { kind: text }
+  마지막교체일: { kind: date }
+  메모:         { kind: text }

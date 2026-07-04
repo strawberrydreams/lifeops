@@ -3,8 +3,10 @@ use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use lifeops_core::entity::recurrence::{apply_recurrence, RecurrenceOutcome};
 use lifeops_core::error::CoreError;
-use lifeops_core::view::sort_entities;
+use lifeops_core::schema::FieldKind;
+use lifeops_core::view::{is_system_column, matches_condition, resolve_today_token, sort_entities};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 
@@ -12,6 +14,31 @@ fn unknown_filter_field_error(ty: &str, field: &str) -> ApiError {
     ApiError(
         StatusCode::BAD_REQUEST,
         json!({ "error": { "code": "view", "message": format!("타입 '{ty}'에 없는 필터 필드 '{field}'") } }),
+    )
+}
+
+const URL_OPS: [&str; 5] = ["lt", "gt", "lte", "gte", "month"];
+
+/// "lte:$today+7d" → {"lte": "$today+7d"}, 그 외는 eq 스칼라. 숫자면 숫자로.
+fn url_condition(raw: &str) -> Value {
+    for op in URL_OPS {
+        if let Some(v) = raw.strip_prefix(&format!("{op}:")) {
+            return json!({ op: url_scalar(v) });
+        }
+    }
+    url_scalar(raw)
+}
+
+fn url_scalar(s: &str) -> Value {
+    s.parse::<f64>()
+        .map(Value::from)
+        .unwrap_or_else(|_| Value::String(s.to_string()))
+}
+
+fn bad_token_error(ty: &str, field: &str, raw: &str) -> ApiError {
+    ApiError(
+        StatusCode::BAD_REQUEST,
+        json!({ "error": { "code": "view", "message": format!("타입 '{ty}' 필드 '{field}': 날짜 토큰 '{raw}'은 date 필드에서만, $today[±Nd] 형식만 지원") } }),
     )
 }
 
@@ -48,20 +75,29 @@ pub async fn list(
     let types = schemas.family_of(&ty);
     let mut entities = st.store.list(&types).await?;
 
-    // type/sort 외의 쿼리 파라미터는 eq 필터(문자열 일치), 스키마에 없는 필드는 400
+    // type/sort 외의 쿼리 파라미터는 연산자(op:값) 또는 eq 필터, 스키마에 없는 필드는 400
+    let today = chrono::Local::now().date_naive();
     for (k, v) in &params {
         if k == "type" || k == "sort" {
             continue;
         }
-        if !schema.fields.contains_key(k) {
+        let Some(fdef) = schema.fields.get(k) else {
             return Err(unknown_filter_field_error(&ty, k));
+        };
+        // $today 토큰 검증 (뷰 엔진과 동일 규칙)
+        if v.contains("$today") {
+            let token = v.rsplit(':').next().unwrap_or(v);
+            if !matches!(fdef.kind, FieldKind::Date) || resolve_today_token(token, today).is_none() {
+                return Err(bad_token_error(&ty, k, v));
+            }
         }
-        entities.retain(|e| e.data.get(k).and_then(Value::as_str) == Some(v.as_str()));
+        let condition = url_condition(v);
+        entities.retain(|e| matches_condition(e.data.get(k), &fdef.kind, &condition, today));
     }
 
     if let Some(sort) = params.get("sort") {
         let field = sort.strip_prefix('-').unwrap_or(sort);
-        if !schema.fields.contains_key(field) {
+        if !is_system_column(field) && !schema.fields.contains_key(field) {
             return Err(unknown_filter_field_error(&ty, field));
         }
         sort_entities(&mut entities, schema, sort);
@@ -111,8 +147,23 @@ pub async fn update(
 ) -> Result<Json<Value>, ApiError> {
     let patch: Map<String, Value> = patch.as_object().cloned().unwrap_or_default();
     let schemas = st.schemas.read().await;
+    let before = st
+        .store
+        .get(&id)
+        .await?
+        .ok_or_else(|| ApiError::from(CoreError::NotFound(id.clone())))?;
     let entity = st.store.update(&schemas, &id, patch).await?;
-    Ok(Json(json!(entity)))
+    let today = chrono::Local::now().date_naive();
+    let outcome = apply_recurrence(&st.store, &schemas, &before, &entity, today).await?;
+    let mut body = json!(entity);
+    match outcome {
+        RecurrenceOutcome::Spawned(spawned) => body["spawned"] = json!(spawned),
+        RecurrenceOutcome::BadRule(rule) => {
+            body["recurrence_warning"] = json!(format!("반복 규칙을 해석할 수 없음: {rule}"))
+        }
+        RecurrenceOutcome::NotApplicable => {}
+    }
+    Ok(Json(body))
 }
 
 /// DELETE /api/entities/:id
@@ -257,5 +308,78 @@ mod tests {
             Request::builder().uri("/api/entities?type=유령타입").body(Body::empty()).unwrap()
         ).await.unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn 목록_연산자_필터와_today_토큰() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+        for (이름, 가격) in [("싼것", 100000.0), ("비싼것", 650000.0)] {
+            app.clone().oneshot(post("/api/entities", json!({
+                "type": "시계", "data": { "이름": 이름, "가격": { "amount": 가격, "currency": "KRW" } }
+            }))).await.unwrap();
+        }
+        let res = app.clone().oneshot(
+            Request::builder().uri("/api/entities?type=물건&%EA%B0%80%EA%B2%A9=gte:200000").body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let list = body_json(res).await;
+        assert_eq!(list.as_array().unwrap().len(), 1);
+        assert_eq!(list[0]["data"]["이름"], "비싼것");
+
+        // 비date 필드에 $today → 400
+        let res = app.oneshot(
+            Request::builder().uri("/api/entities?type=물건&%EC%9D%B4%EB%A6%84=lte:$today").body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn 목록_시스템컬럼_정렬_허용() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+        let res = app.oneshot(
+            Request::builder().uri("/api/entities?type=물건&sort=-updated_at").body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn 반복_할일_완료시_spawned_포함() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+        let created = body_json(app.clone().oneshot(post("/api/entities",
+            json!({ "type": "할일", "data": { "내용": "청소", "완료": false, "마감일": "2026-01-05", "반복": "매주" } }))).await.unwrap()).await;
+        let id = created["id"].as_str().unwrap();
+
+        let res = app.clone().oneshot(
+            Request::builder().method("PATCH").uri(format!("/api/entities/{id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "완료": true }).to_string())).unwrap()
+        ).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["data"]["완료"], json!(true));
+        let spawned = &body["spawned"];
+        assert_eq!(spawned["data"]["완료"], json!(false));
+        assert!(spawned["data"]["마감일"].as_str().unwrap() > "2026-01-05");
+    }
+
+    #[tokio::test]
+    async fn 잘못된_반복은_경고만() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+        let created = body_json(app.clone().oneshot(post("/api/entities",
+            json!({ "type": "할일", "data": { "내용": "x", "완료": false, "반복": "격주" } }))).await.unwrap()).await;
+        let id = created["id"].as_str().unwrap();
+        let res = app.oneshot(
+            Request::builder().method("PATCH").uri(format!("/api/entities/{id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "완료": true }).to_string())).unwrap()
+        ).await.unwrap();
+        let body = body_json(res).await;
+        assert_eq!(body["data"]["완료"], json!(true)); // 완료는 진행
+        assert!(body.get("spawned").is_none());
+        assert!(body["recurrence_warning"].as_str().unwrap().contains("격주"));
     }
 }
