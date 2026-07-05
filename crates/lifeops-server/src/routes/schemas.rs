@@ -1,6 +1,6 @@
 use crate::error::ApiError;
 use crate::state::AppState;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use indexmap::IndexMap;
@@ -9,7 +9,8 @@ use lifeops_core::schema::{
     load_raw_dir, to_yaml, RawBehaviors, RawFieldDef, RawSchema, SchemaSet,
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,6 +32,12 @@ pub struct SchemaInput {
     pub field_order: Option<Vec<String>>,
     #[serde(default)]
     pub renames: IndexMap<String, String>,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateQuery {
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 pub async fn create(
@@ -64,10 +71,21 @@ pub async fn get_one(
 }
 
 pub async fn update(
-    State(_st): State<AppState>,
-    Path(_name): Path<String>,
+    State(st): State<AppState>,
+    Path(name): Path<String>,
+    Query(query): Query<UpdateQuery>,
+    Json(input): Json<SchemaInput>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    Err(not_implemented())
+    let filename = safe_filename(&name)?;
+    let result = update_schema(&st, &name, &filename, input, query.dry_run).await?;
+    if query.dry_run {
+        Ok(Json(json!({
+            "affected_entities": result.affected_entities,
+            "warnings": result.warnings
+        })))
+    } else {
+        Ok(Json(json!({ "ok": true })))
+    }
 }
 
 pub async fn delete(
@@ -173,6 +191,311 @@ async fn apply_and_persist(
     Ok(())
 }
 
+struct UpdateResult {
+    affected_entities: usize,
+    warnings: Vec<String>,
+}
+
+async fn update_schema(
+    st: &AppState,
+    name: &str,
+    filename: &str,
+    input: SchemaInput,
+    dry_run: bool,
+) -> Result<UpdateResult, ApiError> {
+    let mut schemas = st.schemas.write().await;
+    if schemas.get(name).is_none() {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            json!({ "error": { "code": "unknown_type", "message": format!("알 수 없는 타입 '{name}'") } }),
+        ));
+    }
+    let family = schemas.family_of(name);
+    let mut candidates = load_raw_dir(&st.schemas_dir).map_err(schema_error_to_api)?;
+    let Some((existing_raw, existing_filename)) = candidates.get(name).cloned() else {
+        tracing::error!("메모리에는 있지만 파일에는 없는 스키마 타입: {name}");
+        return Err(ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": { "code": "schema_load", "message": "내부 서버 오류" } }),
+        ));
+    };
+
+    validate_immutable_update(name, &input, &existing_raw)?;
+    validate_update_renames(&existing_raw, &input)?;
+
+    let raw = to_raw_schema(name.to_string(), &input);
+    candidates.insert(name.to_string(), (raw.clone(), existing_filename.clone()));
+    let new_set = SchemaSet::from_raw(&candidates).map_err(schema_error_to_api)?;
+
+    let impact_changes = impact_changes(&existing_raw, &raw, &input.renames);
+    let impact_report = compute_impact_report(st, &family, &impact_changes).await?;
+
+    if dry_run {
+        return Ok(UpdateResult {
+            affected_entities: impact_report.affected_entities,
+            warnings: impact_report.warnings,
+        });
+    }
+
+    let yaml = to_yaml(&raw).map_err(|err| {
+        tracing::error!("스키마 직렬화 오류: {err}");
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": { "code": "schema_serialize", "message": "내부 서버 오류" } }),
+        )
+    })?;
+
+    let renames: Vec<_> = input
+        .renames
+        .iter()
+        .map(|(old, new)| (old.clone(), new.clone()))
+        .collect();
+    let inverse_renames: Vec<_> = renames
+        .iter()
+        .map(|(old, new)| (new.clone(), old.clone()))
+        .collect();
+    if !renames.is_empty() {
+        st.store.rename_field(&family, &renames).await?;
+    }
+
+    let tmp_path = st.schemas_dir.join(unique_tmp_filename(filename));
+    let final_path = st.schemas_dir.join(existing_filename);
+    let write_result = std::fs::write(&tmp_path, yaml)
+        .map_err(|err| io_api_error("schema_write", err))
+        .and_then(|_| {
+            if let Err(err) = std::fs::rename(&tmp_path, &final_path) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(io_api_error("schema_write", err));
+            }
+            Ok(())
+        });
+
+    if let Err(err) = write_result {
+        if !inverse_renames.is_empty() {
+            if let Err(rollback_err) = st.store.rename_field(&family, &inverse_renames).await {
+                tracing::error!("스키마 저장 실패 후 필드 rename rollback 실패: {rollback_err}");
+            }
+        }
+        return Err(err);
+    }
+
+    *schemas = new_set;
+    Ok(UpdateResult {
+        affected_entities: impact_report.affected_entities,
+        warnings: impact_report.warnings,
+    })
+}
+
+fn validate_immutable_update(
+    name: &str,
+    input: &SchemaInput,
+    existing_raw: &RawSchema,
+) -> Result<(), ApiError> {
+    if let Some(body_name) = input.name.as_deref().map(str::trim) {
+        if body_name != name {
+            return Err(schema_immutable_error("type은 생성 후 변경할 수 없습니다"));
+        }
+    }
+    if input.extends != existing_raw.extends {
+        return Err(schema_immutable_error(
+            "extends는 생성 후 변경할 수 없습니다",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_update_renames(existing_raw: &RawSchema, input: &SchemaInput) -> Result<(), ApiError> {
+    let old_names: HashSet<_> = input.renames.keys().map(String::as_str).collect();
+    let mut new_names = HashSet::new();
+    for (old, new) in &input.renames {
+        if old == new {
+            return Err(schema_validation_error(format!(
+                "필드 이름 변경 '{old}' -> '{new}'는 같은 이름입니다"
+            )));
+        }
+        if !existing_raw.fields.contains_key(old) {
+            return Err(schema_validation_error(format!(
+                "필드 이름 변경 old '{old}'가 기존 스키마에 없습니다"
+            )));
+        }
+        if input.fields.contains_key(old) {
+            return Err(schema_validation_error(format!(
+                "필드 이름 변경 source '{old}'는 새 스키마 fields에서 제거되어야 합니다"
+            )));
+        }
+        if existing_raw.fields.contains_key(new) {
+            return Err(schema_validation_error(format!(
+                "필드 이름 변경 target '{new}'가 기존 스키마 필드와 충돌합니다"
+            )));
+        }
+        if !input.fields.contains_key(new) {
+            return Err(schema_validation_error(format!(
+                "필드 이름 변경 new '{new}'가 새 스키마에 없습니다"
+            )));
+        }
+        if !new_names.insert(new.as_str()) {
+            return Err(schema_validation_error(format!(
+                "필드 이름 변경 new '{new}'가 중복됨"
+            )));
+        }
+        if old_names.contains(new.as_str()) {
+            return Err(schema_validation_error(format!(
+                "필드 이름 변경 '{old}' -> '{new}'가 다른 변경의 old와 겹침"
+            )));
+        }
+    }
+    Ok(())
+}
+
+struct ImpactReport {
+    affected_entities: usize,
+    warnings: Vec<String>,
+}
+
+struct CountedImpact {
+    change: ImpactChange,
+    count: usize,
+}
+
+#[derive(Clone)]
+enum ImpactChange {
+    Removed {
+        field: String,
+    },
+    Renamed {
+        old: String,
+        new: String,
+    },
+    KindChanged {
+        field: String,
+        old_kind: String,
+        new_kind: String,
+    },
+}
+
+impl ImpactChange {
+    fn source_field(&self) -> &str {
+        match self {
+            ImpactChange::Removed { field } | ImpactChange::KindChanged { field, .. } => {
+                field.as_str()
+            }
+            ImpactChange::Renamed { old, .. } => old.as_str(),
+        }
+    }
+
+    fn warning(&self, count: usize) -> String {
+        match self {
+            ImpactChange::Removed { field } => {
+                format!("필드 '{field}' 제거는 기존 엔티티 {count}건의 데이터에 영향을 줍니다")
+            }
+            ImpactChange::Renamed { old, new } => {
+                format!("필드 '{old}' -> '{new}' 이름 변경은 기존 엔티티 {count}건의 데이터 키를 바꿉니다")
+            }
+            ImpactChange::KindChanged {
+                field,
+                old_kind,
+                new_kind,
+            } => {
+                format!(
+                    "필드 '{field}' kind 변경({old_kind} -> {new_kind})은 기존 엔티티 {count}건의 데이터에 영향을 줍니다"
+                )
+            }
+        }
+    }
+}
+
+fn impact_changes(
+    existing_raw: &RawSchema,
+    raw: &RawSchema,
+    renames: &IndexMap<String, String>,
+) -> Vec<ImpactChange> {
+    let mut changes = Vec::new();
+    for field in existing_raw.fields.keys() {
+        if !raw.fields.contains_key(field) && !renames.contains_key(field) {
+            changes.push(ImpactChange::Removed {
+                field: field.clone(),
+            });
+        }
+    }
+    for (old, new) in renames {
+        changes.push(ImpactChange::Renamed {
+            old: old.clone(),
+            new: new.clone(),
+        });
+    }
+    for (field, existing_field) in &existing_raw.fields {
+        let Some(new_field) = raw.fields.get(field) else {
+            continue;
+        };
+        if existing_field.kind != new_field.kind {
+            changes.push(ImpactChange::KindChanged {
+                field: field.clone(),
+                old_kind: existing_field.kind.clone(),
+                new_kind: new_field.kind.clone(),
+            });
+        }
+    }
+    changes
+}
+
+async fn compute_impact_report(
+    st: &AppState,
+    family: &[String],
+    changes: &[ImpactChange],
+) -> Result<ImpactReport, ApiError> {
+    if changes.is_empty() {
+        return Ok(ImpactReport {
+            affected_entities: 0,
+            warnings: Vec::new(),
+        });
+    }
+    let entities = st.store.list(family).await?;
+    let mut counted: Vec<_> = changes
+        .iter()
+        .cloned()
+        .map(|change| CountedImpact { change, count: 0 })
+        .collect();
+    let mut affected_entities = 0;
+    for entity in &entities {
+        let mut affected = false;
+        for impact in &mut counted {
+            if has_non_null_value(&entity.data, impact.change.source_field()) {
+                impact.count += 1;
+                affected = true;
+            }
+        }
+        if affected {
+            affected_entities += 1;
+        }
+    }
+    let warnings = counted
+        .iter()
+        .map(|impact| impact.change.warning(impact.count))
+        .collect();
+    Ok(ImpactReport {
+        affected_entities,
+        warnings,
+    })
+}
+
+fn has_non_null_value(data: &Map<String, Value>, field: &str) -> bool {
+    data.get(field).is_some_and(|value| !value.is_null())
+}
+
+fn schema_immutable_error(message: &str) -> ApiError {
+    ApiError(
+        StatusCode::BAD_REQUEST,
+        json!({ "error": { "code": "schema_immutable", "message": message } }),
+    )
+}
+
+fn schema_validation_error(message: String) -> ApiError {
+    ApiError(
+        StatusCode::BAD_REQUEST,
+        json!({ "error": { "code": "schema_validation", "message": message } }),
+    )
+}
+
 fn unique_tmp_filename(filename: &str) -> String {
     let seq = SCHEMA_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
@@ -209,6 +532,15 @@ mod tests {
     fn post(uri: &str, body: Value) -> Request<Body> {
         Request::builder()
             .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn put(uri: &str, body: Value) -> Request<Body> {
+        Request::builder()
+            .method("PUT")
             .uri(uri)
             .header("content-type", "application/json")
             .body(Body::from(body.to_string()))
@@ -374,5 +706,349 @@ mod tests {
         let mut statuses = vec![one.unwrap().status(), two.unwrap().status()];
         statuses.sort();
         assert_eq!(statuses, [StatusCode::CREATED, StatusCode::CONFLICT]);
+    }
+
+    #[tokio::test]
+    async fn 필드_추가_수정이_반영된다() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+
+        let res = app
+            .clone()
+            .oneshot(put(
+                "/api/schemas/물건",
+                json!({
+                    "type": "물건",
+                    "category": "컬렉션",
+                    "fields": {
+                        "이름": { "kind": "text", "required": true },
+                        "상태": { "kind": "enum", "options": ["위시", "주문됨", "보유", "과거"] },
+                        "가격": { "kind": "money" },
+                        "메모": { "kind": "text" }
+                    }
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let body = body_json(
+            app.oneshot(
+                Request::builder()
+                    .uri("/api/schemas")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert!(body["types"]["물건"]["fields"].get("메모").is_some());
+        assert!(body["types"]["물건"]["fields"].get("가격").is_some());
+    }
+
+    #[tokio::test]
+    async fn dry_run은_저장하지_않고_영향을_보고한다() {
+        let (state, _dir) = test_state().await;
+        let sdir = state.schemas_dir.clone();
+        let app = build_app(state);
+
+        app.clone()
+            .oneshot(post(
+                "/api/entities",
+                json!({
+                    "type": "물건",
+                    "data": { "이름": "잡화", "가격": { "amount": 12000, "currency": "KRW" } }
+                }),
+            ))
+            .await
+            .unwrap();
+
+        let res = app
+            .oneshot(put(
+                "/api/schemas/물건?dry_run=true",
+                json!({
+                    "type": "물건",
+                    "category": "컬렉션",
+                    "fields": {
+                        "이름": { "kind": "text", "required": true },
+                        "상태": { "kind": "enum", "options": ["위시", "주문됨", "보유", "과거"] }
+                    }
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["affected_entities"], json!(1));
+        let warnings = body["warnings"].as_array().unwrap();
+        assert!(warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("가격")));
+
+        let saved = std::fs::read_to_string(sdir.join("물건.yaml")).unwrap();
+        assert!(saved.contains("가격"));
+    }
+
+    #[tokio::test]
+    async fn dry_run은_null_값을_영향_대상에서_제외한다() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+
+        app.clone()
+            .oneshot(post(
+                "/api/entities",
+                json!({
+                    "type": "물건",
+                    "data": { "이름": "빈가격", "가격": null }
+                }),
+            ))
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(post(
+                "/api/entities",
+                json!({
+                    "type": "물건",
+                    "data": { "이름": "실가격", "가격": { "amount": 12000, "currency": "KRW" } }
+                }),
+            ))
+            .await
+            .unwrap();
+
+        let res = app
+            .oneshot(put(
+                "/api/schemas/물건?dry_run=true",
+                json!({
+                    "type": "물건",
+                    "category": "컬렉션",
+                    "fields": {
+                        "이름": { "kind": "text", "required": true },
+                        "상태": { "kind": "enum", "options": ["위시", "주문됨", "보유", "과거"] }
+                    }
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["affected_entities"], json!(1));
+        assert!(body["warnings"][0].as_str().unwrap().contains("1"));
+    }
+
+    #[tokio::test]
+    async fn dry_run_rename은_필드명과_건수_warning을_반환한다() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+
+        app.clone()
+            .oneshot(post(
+                "/api/entities",
+                json!({
+                    "type": "물건",
+                    "data": { "이름": "잡화" }
+                }),
+            ))
+            .await
+            .unwrap();
+
+        let res = app
+            .oneshot(put(
+                "/api/schemas/물건?dry_run=true",
+                json!({
+                    "type": "물건",
+                    "category": "컬렉션",
+                    "fields": {
+                        "명칭": { "kind": "text", "required": true },
+                        "상태": { "kind": "enum", "options": ["위시", "주문됨", "보유", "과거"] },
+                        "가격": { "kind": "money" }
+                    },
+                    "renames": { "이름": "명칭" }
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["affected_entities"], json!(1));
+        let warnings = body["warnings"].as_array().unwrap();
+        assert!(warnings.iter().any(|w| {
+            let w = w.as_str().unwrap();
+            w.contains("이름") && w.contains("명칭") && w.contains("1")
+        }));
+    }
+
+    #[tokio::test]
+    async fn dry_run_kind_변경은_영향과_warning을_반환한다() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+
+        app.clone()
+            .oneshot(post(
+                "/api/entities",
+                json!({
+                    "type": "물건",
+                    "data": { "이름": "빈가격", "가격": null }
+                }),
+            ))
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(post(
+                "/api/entities",
+                json!({
+                    "type": "물건",
+                    "data": { "이름": "실가격", "가격": { "amount": 12000, "currency": "KRW" } }
+                }),
+            ))
+            .await
+            .unwrap();
+
+        let res = app
+            .oneshot(put(
+                "/api/schemas/물건?dry_run=true",
+                json!({
+                    "type": "물건",
+                    "category": "컬렉션",
+                    "fields": {
+                        "이름": { "kind": "text", "required": true },
+                        "상태": { "kind": "enum", "options": ["위시", "주문됨", "보유", "과거"] },
+                        "가격": { "kind": "text" }
+                    }
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["affected_entities"], json!(1));
+        let warnings = body["warnings"].as_array().unwrap();
+        assert!(warnings.iter().any(|w| {
+            let w = w.as_str().unwrap();
+            w.contains("가격") && w.contains("kind") && w.contains("money") && w.contains("text")
+        }));
+    }
+
+    #[tokio::test]
+    async fn rename은_엔티티_데이터_키를_바꾼다() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+
+        let created = body_json(
+            app.clone()
+                .oneshot(post(
+                    "/api/entities",
+                    json!({
+                        "type": "물건",
+                        "data": { "이름": "잡화" }
+                    }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = created["id"].as_str().unwrap();
+
+        let res = app
+            .clone()
+            .oneshot(put(
+                "/api/schemas/물건",
+                json!({
+                    "type": "물건",
+                    "category": "컬렉션",
+                    "fields": {
+                        "명칭": { "kind": "text", "required": true },
+                        "상태": { "kind": "enum", "options": ["위시", "주문됨", "보유", "과거"] },
+                        "가격": { "kind": "money" }
+                    },
+                    "renames": { "이름": "명칭" }
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let body = body_json(
+            app.oneshot(
+                Request::builder()
+                    .uri(format!("/api/entities/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(body["entity"]["data"]["명칭"], "잡화");
+        assert!(body["entity"]["data"].get("이름").is_none());
+    }
+
+    #[tokio::test]
+    async fn update는_기존_필드로_rename하는_요청을_거부한다() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+
+        let res = app
+            .oneshot(put(
+                "/api/schemas/물건",
+                json!({
+                    "type": "물건",
+                    "category": "컬렉션",
+                    "fields": {
+                        "상태": { "kind": "text", "required": true },
+                        "가격": { "kind": "money" }
+                    },
+                    "renames": { "이름": "상태" }
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "schema_validation");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("이름"));
+        assert!(message.contains("상태"));
+    }
+
+    #[tokio::test]
+    async fn update는_type_이름_변경을_거부한다() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+
+        let res = app
+            .oneshot(put(
+                "/api/schemas/물건",
+                json!({
+                    "type": "다른이름",
+                    "category": "컬렉션",
+                    "fields": { "이름": { "kind": "text", "required": true } }
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "schema_immutable");
+    }
+
+    #[tokio::test]
+    async fn update는_extends_변경을_거부한다() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+
+        let res = app
+            .oneshot(put(
+                "/api/schemas/시계",
+                json!({
+                    "type": "시계",
+                    "fields": { "무브먼트": { "kind": "text" } }
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "schema_immutable");
     }
 }
