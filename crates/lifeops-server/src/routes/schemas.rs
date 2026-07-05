@@ -64,10 +64,36 @@ pub async fn create(
 }
 
 pub async fn get_one(
-    State(_st): State<AppState>,
-    Path(_name): Path<String>,
+    State(st): State<AppState>,
+    Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    Err(not_implemented())
+    let raw = load_raw_dir(&st.schemas_dir).map_err(schema_error_to_api)?;
+    let Some((own, _)) = raw.get(&name) else {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            json!({ "error": { "code": "unknown_type", "message": format!("알 수 없는 타입 '{name}'") } }),
+        ));
+    };
+
+    let schemas = st.schemas.read().await;
+    let mut inherited = Map::new();
+    if let Some(resolved) = schemas.get(&name) {
+        for (field_name, field) in &resolved.fields {
+            if !own.fields.contains_key(field_name) {
+                inherited.insert(field_name.clone(), json!(field));
+            }
+        }
+    }
+
+    Ok(Json(json!({
+        "type": own.name,
+        "category": own.category,
+        "extends": own.extends,
+        "behaviors": own.behaviors,
+        "field_order": own.field_order,
+        "fields": own.fields,
+        "inherited": inherited,
+    })))
 }
 
 pub async fn update(
@@ -95,13 +121,6 @@ pub async fn delete(
     safe_filename(&name)?;
     delete_schema(&st, &name).await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-fn not_implemented() -> ApiError {
-    ApiError(
-        StatusCode::BAD_REQUEST,
-        json!({ "error": { "code": "not_implemented", "message": "아직 구현되지 않음" } }),
-    )
 }
 
 fn to_raw_schema(name: String, input: &SchemaInput) -> RawSchema {
@@ -1325,6 +1344,50 @@ mod tests {
         let app = build_app(state);
 
         let res = app.oneshot(del("/api/schemas/없는타입")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn 원시_스키마는_own필드와_상속필드를_분리해_준다() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/schemas/시계")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+
+        assert_eq!(body["type"], "시계");
+        assert_eq!(body["extends"], "물건");
+        assert!(body["fields"].get("무브먼트").is_some());
+        assert!(body["fields"].get("이름").is_none());
+        assert!(body["inherited"].get("이름").is_some());
+        assert!(body["inherited"].get("상태").is_some());
+        assert!(body["inherited"].get("가격").is_some());
+        assert!(body["inherited"].get("무브먼트").is_none());
+    }
+
+    #[tokio::test]
+    async fn 없는_타입_원시조회는_404() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/schemas/없는타입")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 }
