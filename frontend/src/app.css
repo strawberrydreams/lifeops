@@ -1,6 +1,10 @@
 /* 전역 스타일. 테스트에서 컴포넌트 <style> 전처리 문제를 피하려고
    사이드바 등 공통 스타일은 여기 전역으로 둔다(컴포넌트는 클래스만 부여). */
 
+/* App layout */
+.app { display: flex; gap: 1rem; }
+main { flex: 1; }
+
 /* Sidebar */
 .sidebar .group-header {
   width: 100%;

@@ -54,8 +54,3 @@
     <p>불러오는 중…</p>
   {/if}
 </div>
-
-<style>
-  .app { display: flex; gap: 1rem; }
-  main { flex: 1; }
-</style>
