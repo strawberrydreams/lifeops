@@ -158,4 +158,21 @@ describe("PageRenderer", () => {
     expect(screen.getByLabelText("시각")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "기록" })).toBeInTheDocument();
   });
+
+  it("profile layout은 browse 링크 없이 ProfileView로 렌더링한다", () => {
+    const blocks: PageBlock[] = [
+      {
+        view: "내 프로필",
+        source: "물건",
+        layout: "profile",
+        entities: [],
+        aggregates: {},
+        sections: [{ title: "기본", fields: ["이름"] }],
+      },
+    ];
+    render(PageRenderer, { page: "나", blocks, schemas });
+
+    expect(screen.queryByRole("link", { name: /내 프로필/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "프로필 시작하기" })).toBeInTheDocument();
+  });
 });

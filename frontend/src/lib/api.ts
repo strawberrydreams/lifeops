@@ -22,8 +22,9 @@ export interface PageBlock {
   source: string;
   filter?: Record<string, unknown> | null;
   sort?: string | null;
-  layout: "table" | "checklist" | "card" | "chart" | "record";
+  layout: "table" | "checklist" | "card" | "chart" | "record" | "profile";
   columns?: string[] | null;
+  sections?: ProfileSection[] | null;
   x?: string | null;
   y?: string | null;
   series?: string | null;
@@ -31,6 +32,11 @@ export interface PageBlock {
   entities: Entity[];
   aggregates: Record<string, unknown>;
   chart?: ChartSeries[] | null;
+}
+
+export interface ProfileSection {
+  title: string;
+  fields: string[];
 }
 
 export interface ChartPoint {

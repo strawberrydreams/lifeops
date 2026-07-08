@@ -63,10 +63,20 @@ pub async fn test_state() -> (AppState, tempfile::TempDir) {
         "type: 할일\nbehaviors:\n  recurrence: { flag: 완료, rule: 반복, date: 마감일 }\nfields:\n  내용: { kind: text, required: true }\n  완료: { kind: bool }\n  마감일: { kind: date }\n  반복: { kind: text }\n  관련물건: { kind: \"list<ref>\", target: 물건 }\n",
     )
     .unwrap();
+    std::fs::write(
+        sdir.join("프로필.yaml"),
+        "type: 프로필\ncategory: 나\nsingleton: true\nfields:\n  이름: { kind: text }\n  거주지: { kind: text }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        vdir.join("프로필.yaml"),
+        "page: 프로필\nblocks:\n  - view: 내 프로필\n    source: 프로필\n    layout: profile\n    sections:\n      - { title: 기본, fields: [이름] }\n      - { title: 생활 환경, fields: [거주지] }\n",
+    )
+    .unwrap();
     let cat_path = dir.path().join("categories.yaml");
     std::fs::write(
         &cat_path,
-        "categories:\n  - { name: 할일, icon: \"✅\" }\n  - { name: 컬렉션, icon: \"📦\" }\n",
+        "categories:\n  - { name: 할일, icon: \"✅\" }\n  - { name: 컬렉션, icon: \"📦\" }\n  - { name: 나, icon: \"🧑\" }\n",
     )
     .unwrap();
     let categories = lifeops_core::schema::load_categories(&cat_path).unwrap();

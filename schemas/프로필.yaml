@@ -1,0 +1,10 @@
+type: 프로필
+category: 나
+singleton: true
+fields:
+  이름:     { kind: text }
+  생년:     { kind: number }
+  거주지:   { kind: text }
+  직업:     { kind: text }
+  AI응답톤: { kind: text }
+  AI메모:   { kind: text }

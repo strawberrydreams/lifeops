@@ -128,6 +128,7 @@ fn 실제_시드_스키마와_카테고리와_홈페이지가_로드된다() {
         "소모품",
         "활동",
         "측정",
+        "프로필",
     ] {
         assert!(schemas.get(ty).is_some(), "시드 타입 누락: {ty}");
     }
@@ -179,7 +180,7 @@ fn 실제_시드_스키마와_카테고리와_홈페이지가_로드된다() {
     let names: Vec<&str> = cats.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(
         names,
-        ["할일", "메모", "컬렉션", "재무", "환경", "취미", "기록"]
+        ["할일", "메모", "컬렉션", "재무", "환경", "취미", "기록", "나"]
     );
     let records = cats
         .iter()
@@ -196,6 +197,8 @@ fn 실제_시드_스키마와_카테고리와_홈페이지가_로드된다() {
     assert_eq!(home.blocks.len(), 3);
     let health = pages.get("건강").expect("views/건강.yaml 필요");
     assert_eq!(health.blocks.len(), 3);
+    let profile = pages.get("프로필").expect("views/프로필.yaml 필요");
+    assert_eq!(profile.blocks.len(), 1);
 
     let quick = &health.blocks[0];
     assert_eq!(quick.view, "빠른 기록");
@@ -224,4 +227,35 @@ fn 실제_시드_스키마와_카테고리와_홈페이지가_로드된다() {
         sleep.aggregate.as_ref().expect("수면 평균 aggregate 필요")["평균수면"],
         "avg(값)"
     );
+}
+
+#[tokio::test]
+async fn 프로필_싱글턴_시드가_유효하고_강제된다() {
+    let sdir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas");
+    let schemas = SchemaSet::load_dir(&sdir).expect("시드 스키마 유효");
+    let profile = schemas.get("프로필").expect("프로필 시드 존재");
+    assert!(profile.singleton, "프로필은 singleton");
+
+    let store = EntityStore::open_in_memory().await.unwrap();
+    store
+        .create(&schemas, "프로필", obj(json!({ "이름": "나" })))
+        .await
+        .unwrap();
+    let duplicate = store
+        .create(&schemas, "프로필", obj(json!({ "이름": "또 나" })))
+        .await;
+    assert!(duplicate.is_err(), "두번째 프로필 생성은 거부");
+}
+
+#[test]
+fn 프로필_페이지_시드가_profile_레이아웃과_sections를_가진다() {
+    use lifeops_core::view::PageSet;
+
+    let vdir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../views");
+    let pages = PageSet::load_dir(&vdir).expect("시드 페이지 유효");
+    let page = pages.get("프로필").expect("프로필 페이지 존재");
+    let block = &page.blocks[0];
+    assert_eq!(block.layout, Layout::Profile);
+    assert_eq!(block.source, "프로필");
+    assert!(block.sections.as_ref().unwrap().len() >= 1);
 }

@@ -6,3 +6,4 @@ categories:
   - { name: 환경,   icon: "🏠", description: 생활공간과 소모품 관리 }
   - { name: 취미,   icon: "🎮", description: 활동과 감상 기록 }
   - { name: 기록,   icon: "📈", description: 시간에 따라 기록하는 측정값 }
+  - { name: 나,     icon: "🧑", description: 나에 대한 기본 맥락과 AI 선호 }
