@@ -108,4 +108,57 @@ mod tests {
         assert!(!texts.iter().any(|t| t.contains('3')));           // number 제외
         assert!(!texts.contains(&"제목"));                         // 필드명 자체 제외
     }
+
+    #[test]
+    fn searchable_fields_리스트_enum과_richtext는_원소별_추출_url과_ref는_제외() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("장소.yaml"),
+            "type: 장소\nfields:\n  태그들: { kind: \"list<enum>\", options: [일기, 회고] }\n  메모들: { kind: \"list<richtext>\" }\n  링크: { kind: url }\n  관련: { kind: \"list<ref>\" }\n",
+        )
+        .unwrap();
+        let set = SchemaSet::load_dir(dir.path()).unwrap();
+        let schema = set.get("장소").unwrap().clone();
+        let entity = Entity {
+            id: "p1".into(),
+            entity_type: "장소".into(),
+            data: json!({
+                "태그들": ["일기", "회고"],
+                "메모들": ["<p>첫 <b>메모</b></p>", "<i>둘째</i> 메모"],
+                "링크": "세이코공식몰검색어",
+                "관련": ["물건77", "물건88"]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let fields = searchable_fields(&schema, &entity);
+
+        // list<enum>: 각 원소가 자신의 (필드명, 값) 항목으로 나온다
+        let tag_texts: Vec<&str> = fields
+            .iter()
+            .filter(|(f, _)| f.as_str() == "태그들")
+            .map(|(_, t)| t.as_str())
+            .collect();
+        assert_eq!(tag_texts, vec!["일기", "회고"]);
+
+        // list<richtext>: 원소별로 HTML 태그가 제거된다
+        let memo_texts: Vec<&str> = fields
+            .iter()
+            .filter(|(f, _)| f.as_str() == "메모들")
+            .map(|(_, t)| t.as_str())
+            .collect();
+        assert_eq!(memo_texts, vec!["첫 메모", "둘째 메모"]);
+
+        // 제외 kind(url, list<ref>)의 실제 값은 검색 텍스트에 없어야 한다
+        let all_texts: Vec<&str> = fields.iter().map(|(_, t)| t.as_str()).collect();
+        assert!(!all_texts.iter().any(|t| t.contains("세이코공식몰검색어"))); // url 값 제외
+        assert!(!all_texts.iter().any(|t| t.contains("물건77")));            // list<ref> 값 제외
+        assert!(!all_texts.iter().any(|t| t.contains("물건88")));
+
+        // 타입명은 여전히 포함된다
+        assert!(all_texts.contains(&"장소"));
+    }
 }
