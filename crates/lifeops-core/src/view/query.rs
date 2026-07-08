@@ -28,6 +28,7 @@ pub async fn run_view_at(
     validate_filter(block, schema, today)?;
     validate_sort(block, schema)?;
     validate_chart(block, schema)?;
+    validate_profile(block, schema)?;
 
     let mut entities = store.list(&schemas.family_of(&block.source)).await?;
     if let Some(filter) = &block.filter {
@@ -60,6 +61,11 @@ pub async fn run_view_at(
     } else {
         None
     };
+    let sections = if block.layout == Layout::Profile {
+        block.sections.clone()
+    } else {
+        None
+    };
 
     Ok(ViewResult {
         view: block.view.clone(),
@@ -72,6 +78,7 @@ pub async fn run_view_at(
         aggregates,
         chart_type,
         chart,
+        sections,
     })
 }
 
@@ -169,6 +176,22 @@ fn validate_chart(block: &ViewBlock, schema: &ResolvedSchema) -> Result<(), View
         }
     }
 
+    Ok(())
+}
+
+fn validate_profile(block: &ViewBlock, schema: &ResolvedSchema) -> Result<(), ViewError> {
+    if block.layout != Layout::Profile {
+        return Ok(());
+    }
+    if let Some(sections) = &block.sections {
+        for section in sections {
+            for field in &section.fields {
+                if !is_system_column(field) && !schema.fields.contains_key(field) {
+                    return Err(unknown_field(block, field));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -604,8 +627,81 @@ mod tests {
             .unwrap();
     }
 
+    fn profile_schemas() -> SchemaSet {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("프로필.yaml"),
+            "type: 프로필\nsingleton: true\nfields:\n  이름: { kind: text }\n  거주지: { kind: text }\n",
+        )
+        .unwrap();
+        SchemaSet::load_dir(dir.path()).unwrap()
+    }
+
     fn block(yaml: &str) -> crate::view::ViewBlock {
         serde_yaml::from_str(yaml).unwrap()
+    }
+
+    #[tokio::test]
+    async fn profile_뷰는_단일_엔티티와_sections를_반환한다() {
+        let schemas = profile_schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        store
+            .create(
+                &schemas,
+                "프로필",
+                obj(json!({ "이름": "미쿠", "거주지": "삿포로" })),
+            )
+            .await
+            .unwrap();
+
+        let result = run_view(
+            &store,
+            &schemas,
+            &block(
+                "view: 내 프로필\nsource: 프로필\nlayout: profile\nsections:\n  - { title: 기본, fields: [이름] }\n",
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.entities.len(), 1);
+        assert_eq!(result.entities[0].data["이름"], json!("미쿠"));
+        assert_eq!(result.sections.as_ref().unwrap()[0].title, "기본");
+    }
+
+    #[tokio::test]
+    async fn 빈_싱글턴_profile은_0행이고_에러가_아니다() {
+        let schemas = profile_schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        let result = run_view(
+            &store,
+            &schemas,
+            &block(
+                "view: 내 프로필\nsource: 프로필\nlayout: profile\nsections:\n  - { title: 기본, fields: [이름] }\n",
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.entities.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn profile_sections에_없는_필드는_unknownfield() {
+        let schemas = profile_schemas();
+        let store = EntityStore::open_in_memory().await.unwrap();
+        let err = run_view(
+            &store,
+            &schemas,
+            &block(
+                "view: 내 프로필\nsource: 프로필\nlayout: profile\nsections:\n  - { title: 기본, fields: [유령] }\n",
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, ViewError::UnknownField { field, .. } if field == "유령"),
+            "unexpected: {err}"
+        );
     }
 
     #[tokio::test]

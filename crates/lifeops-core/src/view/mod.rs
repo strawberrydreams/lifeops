@@ -3,7 +3,8 @@ pub mod page;
 pub mod query;
 pub use crate::error::ViewError;
 pub use model::{
-    ChartPoint, ChartSeries, ChartType, Filter, Layout, PageDef, PageResult, ViewBlock, ViewResult,
+    ChartPoint, ChartSeries, ChartType, Filter, Layout, PageDef, PageResult, ProfileSection,
+    ViewBlock, ViewResult,
 };
 pub use page::{run_page, PageSet};
 pub use query::{

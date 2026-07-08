@@ -14,6 +14,7 @@ pub enum Layout {
     Card,
     Chart,
     Record,
+    Profile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -22,6 +23,13 @@ pub enum ChartType {
     #[default]
     Line,
     Bar,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProfileSection {
+    pub title: String,
+    #[serde(default)]
+    pub fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -49,6 +57,8 @@ pub struct ViewBlock {
     pub series: Option<String>,
     #[serde(default)]
     pub chart_type: ChartType,
+    #[serde(default)]
+    pub sections: Option<Vec<ProfileSection>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,6 +93,8 @@ pub struct ViewResult {
     pub chart_type: Option<ChartType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chart: Option<Vec<ChartSeries>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sections: Option<Vec<ProfileSection>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -141,6 +153,22 @@ mod tests {
         let block: ViewBlock =
             serde_yaml::from_str("view: 빠른 기록\nsource: 측정\nlayout: record\n").unwrap();
         assert_eq!(block.layout, Layout::Record);
+    }
+
+    #[test]
+    fn profile_블록과_sections_파싱() {
+        let block: ViewBlock = serde_yaml::from_str(
+            "view: 내 프로필\nsource: 프로필\nlayout: profile\nsections:\n  - { title: 기본, fields: [이름, 생년] }\n  - { title: 생활, fields: [거주지] }\n",
+        )
+        .unwrap();
+        assert_eq!(block.layout, Layout::Profile);
+        let sections = block.sections.as_ref().unwrap();
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].title, "기본");
+        assert_eq!(
+            sections[0].fields,
+            vec!["이름".to_string(), "생년".to_string()]
+        );
     }
 
     #[test]

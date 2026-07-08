@@ -1,0 +1,9 @@
+page: 프로필
+blocks:
+  - view: 내 프로필
+    source: 프로필
+    layout: profile
+    sections:
+      - { title: 기본, fields: [이름, 생년] }
+      - { title: 생활 환경, fields: [거주지, 직업] }
+      - { title: AI 선호, fields: [AI응답톤, AI메모] }

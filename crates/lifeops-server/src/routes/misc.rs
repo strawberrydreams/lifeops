@@ -109,6 +109,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn schemas는_프로필_singleton과_나_카테고리를_노출() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+        let res = app.oneshot(Request::builder().uri("/api/schemas").body(Body::empty()).unwrap()).await.unwrap();
+        let body = body_json(res).await;
+        assert_eq!(body["types"]["프로필"]["singleton"], serde_json::json!(true));
+        assert!(body["categories"].as_array().unwrap().iter().any(|c| c["name"] == "나"));
+    }
+
+    #[tokio::test]
+    async fn 프로필_페이지는_단일_엔티티와_sections를_반환() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+        app.clone().oneshot(Request::builder().method("POST").uri("/api/entities")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::json!({ "type": "프로필", "data": { "이름": "미쿠", "거주지": "삿포로" } }).to_string())).unwrap())
+            .await.unwrap();
+
+        let res = app.oneshot(Request::builder().uri("/api/pages/프로필").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        let block = &body["blocks"][0];
+        assert_eq!(block["layout"], "profile");
+        assert_eq!(block["entities"].as_array().unwrap().len(), 1);
+        assert_eq!(block["entities"][0]["data"]["이름"], "미쿠");
+        assert_eq!(block["sections"][0]["title"], "기본");
+    }
+
+    #[tokio::test]
     async fn reload는_categories도_갱신() {
         let (state, dir) = test_state().await;
         let cat_path = dir.path().join("categories.yaml");
