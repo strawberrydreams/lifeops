@@ -60,6 +60,47 @@ fn field_texts(kind: &FieldKind, value: &Value) -> Vec<String> {
     }
 }
 
+/// 대소문자 무시 부분 문자열 위치(char 인덱스).
+fn find_ci(hay: &[char], needle: &[char]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > hay.len() {
+        return None;
+    }
+    (0..=hay.len() - needle.len()).find(|&i| {
+        hay[i..i + needle.len()]
+            .iter()
+            .zip(needle.iter())
+            .all(|(a, b)| a.to_lowercase().eq(b.to_lowercase()))
+    })
+}
+
+/// 매치 주변을 잘라 (스니펫, 매치시작 char오프셋, 매치길이 char수)를 만든다.
+pub fn build_snippet(text: &str, token: &str) -> (String, usize, usize) {
+    const WINDOW: usize = 30;
+    let chars: Vec<char> = text.chars().collect();
+    let needle: Vec<char> = token.chars().collect();
+    let Some(pos) = find_ci(&chars, &needle) else {
+        let end = chars.len().min(WINDOW * 2);
+        let mut s: String = chars[..end].iter().collect();
+        if end < chars.len() {
+            s.push('…');
+        }
+        return (s, 0, 0);
+    };
+    let win_start = pos.saturating_sub(WINDOW);
+    let win_end = (pos + needle.len() + WINDOW).min(chars.len());
+    let mut snippet = String::new();
+    let mut start = pos - win_start;
+    if win_start > 0 {
+        snippet.push('…');
+        start += 1;
+    }
+    snippet.extend(chars[win_start..win_end].iter());
+    if win_end < chars.len() {
+        snippet.push('…');
+    }
+    (snippet, start, needle.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +201,21 @@ mod tests {
 
         // 타입명은 여전히 포함된다
         assert!(all_texts.contains(&"장소"));
+    }
+
+    #[test]
+    fn build_snippet_매치_주변과_오프셋() {
+        let (s, start, len) = build_snippet("작년에 산 세이코를 다시 정리했다", "세이코");
+        assert_eq!(len, 3);
+        assert_eq!(s.chars().skip(start).take(len).collect::<String>(), "세이코");
+    }
+
+    #[test]
+    fn build_snippet_긴_텍스트는_말줄임() {
+        let text = format!("{}세이코{}", "가".repeat(60), "나".repeat(60));
+        let (s, start, len) = build_snippet(&text, "세이코");
+        assert!(s.starts_with('…'));
+        assert!(s.ends_with('…'));
+        assert_eq!(s.chars().skip(start).take(len).collect::<String>(), "세이코");
     }
 }
