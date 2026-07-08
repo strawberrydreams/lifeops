@@ -16,6 +16,7 @@ export interface ResolvedSchema {
   name: string;
   extends?: string | null;
   category?: string | null;
+  singleton?: boolean;
   behaviors?: { recurrence?: RecurrenceDef | null } | null;
   fields: Record<string, ResolvedField>;
 }

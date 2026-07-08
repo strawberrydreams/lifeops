@@ -1,6 +1,9 @@
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/svelte";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/svelte";
 import Sidebar from "./Sidebar.svelte";
+import { navigate } from "./router.svelte";
+
+vi.mock("./router.svelte", () => ({ navigate: vi.fn() }));
 
 const schemas = {
   노트: { name: "노트", category: "메모", fields: {} },
@@ -12,6 +15,8 @@ const categories = [
   { name: "메모", icon: "📝" },
   { name: "컬렉션", icon: "📦" },
 ];
+
+afterEach(() => vi.clearAllMocks());
 
 describe("Sidebar", () => {
   it("카테고리 헤더 아래에 소속 타입이 나오고 미지정은 기타로 간다", () => {
@@ -28,5 +33,18 @@ describe("Sidebar", () => {
   it("카테고리마다 새 타입 버튼이 있다", () => {
     render(Sidebar, { schemas, categories, onreloaded: () => {} });
     expect(screen.getAllByTitle("새 타입").length).toBeGreaterThan(0);
+  });
+
+  it("싱글턴 타입은 /pages로 이동하고 추가 버튼이 없다", async () => {
+    render(Sidebar, {
+      schemas: { 프로필: { name: "프로필", category: "나", singleton: true, fields: {} } },
+      categories: [{ name: "나", icon: "🧑" }],
+      onreloaded: () => {},
+    });
+
+    expect(screen.queryByTitle("추가")).not.toBeInTheDocument();
+    await fireEvent.click(screen.getByText("프로필"));
+
+    expect(navigate).toHaveBeenCalledWith("/pages/%ED%94%84%EB%A1%9C%ED%95%84");
   });
 });

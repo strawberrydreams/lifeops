@@ -28,6 +28,11 @@
     await reload();
     onreloaded(await getSchemas());
   }
+
+  function typeUrl(type: string): string {
+    const encoded = encodeURIComponent(type);
+    return schemas[type]?.singleton ? `/pages/${encoded}` : `/browse/${encoded}`;
+  }
 </script>
 
 <nav class="sidebar">
@@ -43,8 +48,10 @@
         <ul>
           {#each g.types as type (type)}
             <li>
-              <button type="button" onclick={() => navigate(`/browse/${encodeURIComponent(type)}`)}>{type}</button>
-              <button type="button" class="add" title="추가" onclick={() => navigate(`/new/${encodeURIComponent(type)}`)}>+</button>
+              <button type="button" onclick={() => navigate(typeUrl(type))}>{type}</button>
+              {#if !schemas[type]?.singleton}
+                <button type="button" class="add" title="추가" onclick={() => navigate(`/new/${encodeURIComponent(type)}`)}>+</button>
+              {/if}
             </li>
           {/each}
         </ul>

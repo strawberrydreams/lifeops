@@ -4,6 +4,7 @@
   import { navigate } from "./router.svelte";
   import Chart from "./widgets/Chart.svelte";
   import ChecklistWidget from "./widgets/ChecklistWidget.svelte";
+  import ProfileView from "./widgets/ProfileView.svelte";
   import QuickRecordWidget from "./widgets/QuickRecordWidget.svelte";
   import ValueCell from "./ValueCell.svelte";
 
@@ -31,7 +32,7 @@
   <h1>{page}</h1>
   {#each blocks as block}
     <section class="block">
-      {#if block.layout === "checklist"}
+      {#if block.layout === "checklist" || block.layout === "profile"}
         <h2>{block.view}</h2>
       {:else}
         <h2><a href={browseUrl(block)} onclick={(e) => { e.preventDefault(); navigate(browseUrl(block)); }}>{block.view} ›</a></h2>
@@ -43,6 +44,8 @@
       {/if}
       {#if block.layout === "checklist"}
         <ChecklistWidget block={block} schemas={schemas} />
+      {:else if block.layout === "profile"}
+        <ProfileView block={block} schemas={schemas} />
       {:else if block.layout === "chart"}
         <Chart series={block.chart ?? []} chartType={block.chart_type === "bar" ? "bar" : "line"} />
       {:else if block.layout === "record"}
