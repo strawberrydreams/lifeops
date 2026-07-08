@@ -60,6 +60,31 @@ describe("SearchPalette", () => {
     expect(onclose).toHaveBeenCalled();
   });
 
+  it("늦게 도착한 오래된 응답이 최신 결과를 덮어쓰지 않는다", async () => {
+    // 두 검색이 동시 in-flight일 때(응답이 디바운스보다 느린 경우) 순서 역전 방지.
+    const resolvers: Array<(v: api.SearchResponse) => void> = [];
+    vi.spyOn(api, "search").mockImplementation(
+      () => new Promise<api.SearchResponse>((resolve) => resolvers.push(resolve)),
+    );
+    render(SearchPalette, { open: true, schemas, categories, onclose: vi.fn() });
+    const input = screen.getByLabelText("검색어");
+
+    await fireEvent.input(input, { target: { value: "ab" } }); // run("ab") → resolvers[0]
+    await new Promise((r) => setTimeout(r, 170));
+    await fireEvent.input(input, { target: { value: "abc" } }); // run("abc") → resolvers[1]
+    await new Promise((r) => setTimeout(r, 170));
+
+    expect(resolvers.length).toBe(2);
+    // 최신(둘째) 응답이 먼저 도착
+    resolvers[1]({ query: "abc", results: [hit({ id: "new", label: "최신결과" })], total: 1, truncated: false });
+    await screen.findByText("최신결과");
+    // 오래된(첫째) 응답이 뒤늦게 도착 → 최신 결과를 덮어쓰면 안 됨
+    resolvers[0]({ query: "ab", results: [hit({ id: "old", label: "오래된결과" })], total: 1, truncated: false });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByText("오래된결과")).toBeNull();
+    expect(screen.getByText("최신결과")).toBeInTheDocument();
+  });
+
   it("무결과면 안내를 보여준다", async () => {
     vi.spyOn(api, "search").mockResolvedValue({ query: "없어요없어요", results: [], total: 0, truncated: false });
     render(SearchPalette, { open: true, schemas, categories, onclose: vi.fn() });

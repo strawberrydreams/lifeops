@@ -20,6 +20,7 @@
   let loading = $state(false);
   let inputEl = $state<HTMLInputElement | null>(null);
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let reqSeq = 0; // 요청 세대 번호 — 늦게 온 오래된 응답을 폐기한다.
 
   $effect(() => {
     if (open) {
@@ -36,15 +37,17 @@
   async function run() {
     const q = query.trim();
     if (!q) { hits = []; total = 0; truncated = false; return; }
+    const myReq = ++reqSeq;
     loading = true;
     try {
       const res = await searchApi(q, limit);
+      if (myReq !== reqSeq) return; // 더 새로운 요청이 시작됨 → 오래된 응답 폐기
       hits = res.results;
       total = res.total;
       truncated = res.truncated;
       selected = 0;
     } finally {
-      loading = false;
+      if (myReq === reqSeq) loading = false;
     }
   }
 
