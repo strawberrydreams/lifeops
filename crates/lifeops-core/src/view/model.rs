@@ -32,33 +32,37 @@ pub struct ProfileSection {
     pub fields: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ViewBlock {
     pub view: String,
     pub source: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<Filter>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort: Option<String>,
     #[serde(default)]
     pub layout: Layout,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub columns: Option<Vec<String>>,
     /// 집계명 -> "함수(필드)" 문자열 (예: "sum(가격)")
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aggregate: Option<IndexMap<String, String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub y: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub series: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default_chart_type")]
     pub chart_type: ChartType,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sections: Option<Vec<ProfileSection>>,
+}
+
+fn is_default_chart_type(chart_type: &ChartType) -> bool {
+    matches!(chart_type, ChartType::Line)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,7 +77,7 @@ pub struct ChartSeries {
     pub points: Vec<ChartPoint>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PageDef {
     pub page: String,
     pub blocks: Vec<ViewBlock>,
