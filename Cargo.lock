@@ -2474,8 +2474,13 @@ dependencies = [
 name = "lifeops-tauri"
 version = "0.1.0"
 dependencies = [
+ "lifeops-core",
  "lifeops-server",
  "percent-encoding",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sqlx",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",

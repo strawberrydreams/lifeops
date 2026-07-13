@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getSystemInfo, type SystemInfo } from "../api";
-  import { getAutostart, isDesktop, openDataDir, setAutostart } from "../tauri";
+  import { getAutostart, importFromDir, isDesktop, openDataDir, setAutostart } from "../tauri";
 
   const desktop = isDesktop();
   let info = $state<SystemInfo | null>(null);
@@ -10,6 +10,10 @@
   let autostartBusy = $state(false);
   let autostartError = $state("");
   let dataDirError = $state("");
+  let importPath = $state("");
+  let importBusy = $state(false);
+  let importMessage = $state("");
+  let importError = $state("");
   let mounted = true;
 
   $effect(() => () => { mounted = false; });
@@ -72,6 +76,25 @@
       if (mounted) dataDirError = "데이터 폴더를 열지 못했습니다.";
     }
   }
+
+  async function doImport() {
+    const path = importPath.trim();
+    if (!path || importBusy) return;
+    importBusy = true;
+    importMessage = "";
+    importError = "";
+    try {
+      await importFromDir(path);
+      if (mounted) {
+        importMessage = "가져오기 준비 완료 — 앱을 재시작하면 적용됩니다.";
+        importPath = "";
+      }
+    } catch (error) {
+      if (mounted) importError = `데이터 가져오기를 준비하지 못했습니다: ${String(error)}`;
+    } finally {
+      if (mounted) importBusy = false;
+    }
+  }
 </script>
 
 <section class="settings">
@@ -99,6 +122,12 @@
         <span class="label">로그인 시 자동 시작</span>
         <span><input type="checkbox" checked={autostart} disabled={!autostartReady || autostartBusy} onchange={toggleAutostart} /> 사용</span>
       </label>
+      <div class="row">
+        <label class="label" for="import-path">데이터 가져오기</label>
+        <input id="import-path" type="text" placeholder="기존 디렉터리 경로" bind:value={importPath} disabled={importBusy} />
+        <button type="button" onclick={doImport} disabled={!importPath.trim() || importBusy}>가져오기</button>
+      </div>
+      <p class="hint">현재 데이터는 유지되며, 가져온 데이터는 다음 앱 시작 전에 안전하게 적용됩니다.</p>
     {/if}
   {:else if infoError}
     <p class="error" role="alert">{infoError}</p>
@@ -106,4 +135,6 @@
     <p>불러오는 중…</p>
   {/if}
   {#if desktop && autostartError}<p class="error" role="alert">{autostartError}</p>{/if}
+  {#if desktop && importMessage}<p class="success" role="status">{importMessage}</p>{/if}
+  {#if desktop && importError}<p class="error" role="alert">{importError}</p>{/if}
 </section>

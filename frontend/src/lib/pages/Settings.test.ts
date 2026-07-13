@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getAutostart: vi.fn(),
   setAutostart: vi.fn(),
   openDataDir: vi.fn(),
+  importFromDir: vi.fn(),
 }));
 
 vi.mock("../api", () => ({ getSystemInfo: mocks.getSystemInfo }));
@@ -15,6 +16,7 @@ vi.mock("../tauri", () => ({
   getAutostart: mocks.getAutostart,
   setAutostart: mocks.setAutostart,
   openDataDir: mocks.openDataDir,
+  importFromDir: mocks.importFromDir,
 }));
 
 import Settings from "./Settings.svelte";
@@ -41,8 +43,39 @@ describe("Settings", () => {
     expect(screen.getByText(info.data_dir)).toBeInTheDocument();
     expect(screen.queryByText("로그인 시 자동 시작")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "폴더 열기" })).not.toBeInTheDocument();
+    expect(screen.queryByText("데이터 가져오기")).not.toBeInTheDocument();
     expect(mocks.getAutostart).not.toHaveBeenCalled();
     expect(mocks.openDataDir).not.toHaveBeenCalled();
+  });
+
+  it("데스크탑 가져오기는 경로를 전달하고 재시작 적용을 안내한다", async () => {
+    mocks.desktop = true;
+    mocks.getSystemInfo.mockResolvedValue(info);
+    mocks.getAutostart.mockResolvedValue(false);
+    mocks.importFromDir.mockResolvedValue(undefined);
+
+    render(Settings);
+    const input = await screen.findByLabelText("데이터 가져오기");
+    await fireEvent.input(input, { target: { value: " /old/lifeops " } });
+    await fireEvent.click(screen.getByRole("button", { name: "가져오기" }));
+
+    expect(mocks.importFromDir).toHaveBeenCalledWith("/old/lifeops");
+    expect(await screen.findByRole("status")).toHaveTextContent("앱을 재시작하면 적용됩니다");
+  });
+
+  it("데스크탑 가져오기 실패를 표시하고 재시도 경로를 보존한다", async () => {
+    mocks.desktop = true;
+    mocks.getSystemInfo.mockResolvedValue(info);
+    mocks.getAutostart.mockResolvedValue(false);
+    mocks.importFromDir.mockRejectedValue(new Error("unsafe"));
+
+    render(Settings);
+    const input = await screen.findByLabelText("데이터 가져오기");
+    await fireEvent.input(input, { target: { value: "/old/lifeops" } });
+    await fireEvent.click(screen.getByRole("button", { name: "가져오기" }));
+
+    expect(await screen.findByText(/데이터 가져오기를 준비하지 못했습니다: Error: unsafe/)).toBeInTheDocument();
+    expect(input).toHaveValue("/old/lifeops");
   });
 
   it("데스크탑에서는 데이터 폴더를 열 수 있다", async () => {
