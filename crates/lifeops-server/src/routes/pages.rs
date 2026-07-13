@@ -55,12 +55,14 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// (Task 4) POST /api/pages/preview
+/// POST /api/pages/preview — PageDef를 저장 없이 실행해 PageResult 반환.
 pub async fn preview(
-    State(_st): State<AppState>,
-    Json(_def): Json<PageDef>,
+    State(st): State<AppState>,
+    Json(def): Json<PageDef>,
 ) -> Result<Json<Value>, ApiError> {
-    Err(bad_request("not_implemented", "미구현"))
+    let schemas = st.schemas.read().await;
+    let result = run_page(&st.store, &schemas, &def).await?;
+    Ok(Json(json!(result)))
 }
 
 /// 후보 페이지 집합을 run_page로 검증한 뒤 통과 시에만 파일을 원자적으로 교체하고 메모리 PageSet을 갱신한다.
@@ -362,5 +364,64 @@ mod tests {
         let app = build_app(state);
         let res = app.oneshot(del("/api/pages/유령")).await.unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn preview는_저장없이_결과를_돌려준다() {
+        let (state, _dir) = test_state().await;
+        let vdir = state.views_dir.clone();
+        let app = build_app(state);
+        app.clone()
+            .oneshot(post(
+                "/api/entities",
+                json!({ "type": "할일", "data": { "내용": "청소", "완료": false } }),
+            ))
+            .await
+            .unwrap();
+
+        let res = app
+            .clone()
+            .oneshot(post(
+                "/api/pages/preview",
+                json!({
+                    "page": "미리보기",
+                    "blocks": [
+                        {
+                            "view": "할 일",
+                            "source": "할일",
+                            "filter": { "완료": false },
+                            "layout": "checklist"
+                        }
+                    ]
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["page"], "미리보기");
+        assert_eq!(body["blocks"][0]["entities"].as_array().unwrap().len(), 1);
+
+        assert!(!vdir.join("미리보기.yaml").exists());
+        let list = body_json(app.oneshot(get("/api/pages")).await.unwrap()).await;
+        assert!(!list["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["page"] == "미리보기"));
+    }
+
+    #[tokio::test]
+    async fn preview_없는_source는_400() {
+        let (state, _dir) = test_state().await;
+        let app = build_app(state);
+        let res = app
+            .oneshot(post(
+                "/api/pages/preview",
+                json!({ "page": "p", "blocks": [ { "view": "v", "source": "유령타입" } ] }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 }
