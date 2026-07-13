@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import type { SchemaMap } from "../types";
   import {
     getPages,
@@ -68,7 +69,7 @@
         loading = false;
       });
     } else {
-      const seed = takePageSeed();
+      const seed = untrack(() => takePageSeed());
       items = seed ? [wrap(seed)] : [];
       loading = false;
     }

@@ -14,10 +14,9 @@ vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
   return { ...actual, getPages, previewPage, createPage, updatePage, deletePage };
 });
-vi.mock("../viewseed.svelte", () => ({ takePageSeed: () => null }));
-
 import PageEditor from "./PageEditor.svelte";
 import { ApiError } from "../api";
+import { pageSeed, setPageSeed } from "../viewseed.svelte";
 
 const schemas: SchemaMap = {
   할일: { name: "할일", fields: { 내용: { kind: "text", required: true }, 완료: { kind: "bool", required: false } } },
@@ -36,6 +35,7 @@ function renderedBlock(view: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  pageSeed.block = null;
   previewPage.mockResolvedValue({ page: "p", blocks: [] });
   getPages.mockResolvedValue({ pages: [] });
   createPage.mockResolvedValue({ ok: true });
@@ -49,6 +49,16 @@ describe("PageEditor", () => {
     expect(screen.queryByLabelText("source")).not.toBeInTheDocument();
     await fireEvent.click(screen.getByRole("button", { name: "+ 블록 추가" }));
     expect(screen.getByLabelText("source")).toBeInTheDocument();
+  });
+
+  it("Browse seed를 한 번 소비한 뒤 effect 재실행으로 블록을 지우지 않는다", async () => {
+    setPageSeed({ view: "Browse 씨앗", source: "할일", layout: "table", columns: ["내용"] });
+    render(PageEditor, { schemas, onsaved: () => {}, ondeleted: () => {} });
+    await waitFor(() => expect(screen.getByDisplayValue("Browse 씨앗")).toBeInTheDocument());
+    expect(pageSeed.block).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByDisplayValue("Browse 씨앗")).toBeInTheDocument();
+    expect(screen.getAllByLabelText("source")).toHaveLength(1);
   });
 
   it("이름을 넣고 저장하면 createPage를 호출하고 onsaved를 부른다", async () => {
