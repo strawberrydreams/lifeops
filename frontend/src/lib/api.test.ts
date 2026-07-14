@@ -48,13 +48,14 @@ describe("api", () => {
   });
 
   it("getSystemInfo는 GET /api/system/info를 호출한다", async () => {
-    const f = mockFetch(200, { data_dir: "/tmp/lifeops", port: 3000, lan_addrs: [] });
+    const f = mockFetch(200, { data_dir: "/tmp/lifeops", port: 3000, lan_addrs: [], bind_scope: "localhost" });
     vi.stubGlobal("fetch", f);
 
     await expect(getSystemInfo()).resolves.toEqual({
       data_dir: "/tmp/lifeops",
       port: 3000,
       lan_addrs: [],
+      bind_scope: "localhost",
     });
     expect(f).toHaveBeenCalledWith("/api/system/info", expect.objectContaining({ method: "GET" }));
   });
@@ -176,5 +177,49 @@ describe("api", () => {
       body: JSON.stringify(def),
     }));
     expect(f).toHaveBeenNthCalledWith(2, `/api/pages/${encoded}`, expect.objectContaining({ method: "DELETE" }));
+  });
+
+  it("getConfig는 현재 config를 조회한다", async () => {
+    const config = { bind_scope: "localhost", backup_dir: null, backup_keep: 7 };
+    const f = mockFetch(200, config);
+    vi.stubGlobal("fetch", f);
+    const { getConfig } = await import("./api");
+
+    await expect(getConfig()).resolves.toEqual(config);
+    expect(f).toHaveBeenCalledWith("/api/system/config", expect.objectContaining({ method: "GET" }));
+  });
+
+  it("putConfig는 전달받은 부분 patch만 PUT하고 저장된 config를 돌려준다", async () => {
+    const saved = { bind_scope: "lan", backup_dir: null, backup_keep: 3 };
+    const f = mockFetch(200, saved);
+    vi.stubGlobal("fetch", f);
+    const { putConfig } = await import("./api");
+    const patch = { bind_scope: "lan" as const, backup_keep: 3 };
+
+    await expect(putConfig(patch)).resolves.toEqual(saved);
+    expect(f).toHaveBeenCalledWith("/api/system/config", expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }));
+  });
+
+  it("listBackups는 백업 목록을 반환한다", async () => {
+    const list = { backup_dir: "/b", accessible: true, last_success: null, snapshots: [{ name: "lifeops-x.zip", created_at: "", size: 10 }] };
+    const f = mockFetch(200, list);
+    vi.stubGlobal("fetch", f);
+    const { listBackups } = await import("./api");
+
+    await expect(listBackups()).resolves.toEqual(list);
+    expect(f).toHaveBeenCalledWith("/api/system/backups", expect.objectContaining({ method: "GET" }));
+  });
+
+  it("createBackup은 POST로 스냅샷 메타를 반환한다", async () => {
+    const meta = { name: "lifeops-x.zip", created_at: "", size: 10 };
+    const f = mockFetch(200, meta);
+    vi.stubGlobal("fetch", f);
+    const { createBackup } = await import("./api");
+
+    await expect(createBackup()).resolves.toEqual(meta);
+    expect(f).toHaveBeenCalledWith("/api/system/backup", expect.objectContaining({ method: "POST" }));
   });
 });

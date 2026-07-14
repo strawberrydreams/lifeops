@@ -23,3 +23,11 @@ export function openDataDir(): Promise<void> {
 export function importFromDir(dir: string): Promise<void> {
   return invoke<void>("import_from_dir", { dir });
 }
+
+export function restoreSnapshot(name: string): Promise<void> {
+  return invoke<void>("restore_snapshot", { name });
+}
+
+export function relaunchApp(): Promise<void> {
+  return invoke<void>("relaunch_app");
+}

@@ -228,8 +228,44 @@ export interface SystemInfo {
   data_dir: string;
   port: number;
   lan_addrs: string[];
+  bind_scope: "localhost" | "lan";
 }
 
 export function getSystemInfo(): Promise<SystemInfo> {
   return request("GET", "/api/system/info");
+}
+
+export interface AppConfig {
+  bind_scope: "localhost" | "lan";
+  backup_dir: string | null;
+  backup_keep: number;
+}
+
+export interface SnapshotMeta {
+  name: string;
+  created_at: string;
+  size: number;
+}
+
+export interface BackupsList {
+  backup_dir: string;
+  accessible: boolean;
+  last_success: string | null;
+  snapshots: SnapshotMeta[];
+}
+
+export function getConfig(): Promise<AppConfig> {
+  return request("GET", "/api/system/config");
+}
+
+export function putConfig(patch: Partial<AppConfig>): Promise<AppConfig> {
+  return request("PUT", "/api/system/config", patch);
+}
+
+export function createBackup(): Promise<SnapshotMeta> {
+  return request("POST", "/api/system/backup");
+}
+
+export function listBackups(): Promise<BackupsList> {
+  return request("GET", "/api/system/backups");
 }
