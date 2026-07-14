@@ -59,7 +59,7 @@ describe("App", () => {
     router.route = { name: "settings" };
     vi.spyOn(api, "getSchemas").mockResolvedValue({ types: {}, categories: [] });
     vi.spyOn(api, "getPages").mockResolvedValue({ pages: [] });
-    vi.spyOn(api, "getSystemInfo").mockResolvedValue({ data_dir: "/tmp/lifeops", port: 3000, lan_addrs: [] });
+    vi.spyOn(api, "getSystemInfo").mockResolvedValue({ data_dir: "/tmp/lifeops", port: 3000, lan_addrs: [], bind_scope: "localhost" });
 
     render(App);
 

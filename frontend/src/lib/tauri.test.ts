@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 
-import { getAutostart, importFromDir, isDesktop, openDataDir, setAutostart } from "./tauri";
+import { getAutostart, importFromDir, isDesktop, openDataDir, relaunchApp, restoreSnapshot, setAutostart } from "./tauri";
 
 afterEach(() => {
   delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
@@ -27,10 +27,14 @@ describe("tauri", () => {
     await setAutostart(true);
     await openDataDir();
     await importFromDir("/Users/me/Archive");
+    await restoreSnapshot("lifeops-x.zip");
+    await relaunchApp();
 
     expect(mocks.invoke).toHaveBeenNthCalledWith(1, "get_autostart", undefined);
     expect(mocks.invoke).toHaveBeenNthCalledWith(2, "set_autostart", { enabled: true });
     expect(mocks.invoke).toHaveBeenNthCalledWith(3, "open_data_dir", undefined);
     expect(mocks.invoke).toHaveBeenNthCalledWith(4, "import_from_dir", { dir: "/Users/me/Archive" });
+    expect(mocks.invoke).toHaveBeenNthCalledWith(5, "restore_snapshot", { name: "lifeops-x.zip" });
+    expect(mocks.invoke).toHaveBeenNthCalledWith(6, "relaunch_app", undefined);
   });
 });

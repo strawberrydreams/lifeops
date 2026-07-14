@@ -32,6 +32,12 @@ pub fn build_app(state: AppState) -> Router {
         .route("/api/export", get(misc::export))
         .route("/api/search", get(search::search))
         .route("/api/system/info", get(system::info))
+        .route(
+            "/api/system/config",
+            get(system::config_get).merge(put(system::config_put)),
+        )
+        .route("/api/system/backup", post(system::backup_create))
+        .route("/api/system/backups", get(system::backups_list))
         .route("/api/reload", post(misc::reload));
 
     Router::new()
