@@ -1,5 +1,6 @@
 pub mod app;
 pub mod backup;
+pub mod config;
 pub mod error;
 pub mod routes;
 pub mod state;
@@ -201,16 +202,18 @@ pub async fn build_state(
     ))
 }
 
-/// 시드 설치 → 포트 폴백 바인드 → 상태 로드 → 백업 태스크 → (확정주소, 실행 future).
+/// 시드 설치 → config 로드 → config 바인드로 포트 폴백 → 상태 로드 → 백업 태스크 → (확정주소, 실행 future).
 pub async fn serve(
     config: RunConfig,
 ) -> Result<(SocketAddr, impl std::future::Future<Output = ()>), BoxErr> {
     let paths = resolve_paths(&config.data_dir);
     install_seed_if_empty(&paths)?;
-    let listener = bind_with_fallback(config.bind_addr, config.port).await?;
+    let app_config = config::load_config(&config.data_dir);
+    let listener = bind_with_fallback(app_config.bind_ip(), config.port).await?;
     let addr = listener.local_addr()?;
     let state = build_state(&config, addr).await?;
-    backup::spawn_daily_backup(paths.db_path.clone(), paths.backups_dir.clone(), 7);
+    let backup_dir = app_config.resolved_backup_dir(&config.data_dir);
+    backup::spawn_daily_backup(config.data_dir.clone(), backup_dir, app_config.backup_keep);
     let app = app::build_app(state);
     let fut = async move {
         if let Err(error) = axum::serve(listener, app).await {
@@ -288,6 +291,43 @@ mod tests {
         let handle = tokio::spawn(fut);
         let conn = tokio::net::TcpStream::connect(addr).await;
         assert!(conn.is_ok());
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn serve는_config의_lan을_읽어_unspecified로_바인드() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::config::save_config(
+            dir.path(),
+            &crate::config::AppConfig {
+                bind_scope: crate::config::BindScope::Lan,
+                backup_dir: None,
+                backup_keep: 7,
+            },
+        )
+        .unwrap();
+        let config = RunConfig {
+            data_dir: dir.path().to_path_buf(),
+            bind_addr: "127.0.0.1".parse().unwrap(),
+            port: 0,
+        };
+        let (addr, fut) = serve(config).await.unwrap();
+        let handle = tokio::spawn(fut);
+        assert!(addr.ip().is_unspecified(), "config=lan이면 0.0.0.0 바인드");
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn serve는_config_없으면_localhost_기본() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = RunConfig {
+            data_dir: dir.path().to_path_buf(),
+            bind_addr: "0.0.0.0".parse().unwrap(),
+            port: 0,
+        };
+        let (addr, fut) = serve(config).await.unwrap();
+        let handle = tokio::spawn(fut);
+        assert!(addr.ip().is_loopback(), "config 없으면 localhost");
         handle.abort();
     }
 
