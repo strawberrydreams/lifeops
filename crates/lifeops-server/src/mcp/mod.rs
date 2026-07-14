@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod convert;
 pub mod logic;
 pub mod params;
